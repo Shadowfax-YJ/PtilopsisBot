@@ -10,7 +10,7 @@ import httpx
 import nonebot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, Header, HTTPException
-from nonebot.adapters.onebot.v11 import Adapter, Bot, GroupUploadNoticeEvent
+from nonebot.adapters.onebot.v11 import Adapter, Bot, GroupMessageEvent, GroupUploadNoticeEvent
 from nonebot.drivers.fastapi import Driver
 
 from .collector import SHANGHAI, Collector
@@ -138,6 +138,7 @@ def run(settings: Settings) -> None:
             log.warning("已有一个 QQ 账号连接，忽略额外账号")
             return
         api.bot = bot
+        api.reset_receipts()
         await api.refresh_status()
         wake.set()
         await scheduled_scan()
@@ -147,6 +148,7 @@ def run(settings: Settings) -> None:
         if api.bot is bot:
             api.bot = None
             api.account_online = False
+            api.reset_receipts()
             log.warning("NapCat 已断开，暂停采集和清理")
 
     notice = nonebot.on_notice(priority=10, block=False)
@@ -156,6 +158,17 @@ def run(settings: Settings) -> None:
         if api.bot is not bot or event.group_id != settings.group_id:
             return
         # Notice IDs are message handles, not stable group-file identities.
+        await scheduled_scan()
+
+    file_message = nonebot.on_message(priority=10, block=False)
+
+    @file_message.handle()
+    async def receive_file_message(bot: Bot, event: GroupMessageEvent) -> None:
+        if api.bot is not bot or event.group_id != settings.group_id:
+            return
+        if not any(segment.type == "file" for segment in event.message):
+            return
+        api.remember_file_message(event)
         await scheduled_scan()
 
     async def authorize(authorization: str = Header(default="")) -> None:

@@ -4,11 +4,15 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zipfile import ZipFile
+from zoneinfo import ZoneInfo
 
 import httpx
+import pytest
 from websockets.asyncio.client import connect
 
 
@@ -18,8 +22,10 @@ def free_port() -> int:
         return int(listener.getsockname()[1])
 
 
+@pytest.mark.parametrize("live", [True, False], ids=["live-quoted", "backfill-silent"])
 async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
     tmp_path: Path,
+    live: bool,
 ) -> None:
     package = tmp_path / "sample.zip"
     with ZipFile(package, "w") as archive:
@@ -50,10 +56,12 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
         encoding="utf-8",
     )
     headers = {"Authorization": "Bearer test-only-token"}
-    group_files: set[str] = set()
+    group_files: set[str] = set() if live else {"file-a"}
+    uploaded_at = 1788580800
     handles: dict[str, str] = {}
     scan_seen = asyncio.Event()
     reports: list[str] = []
+    replies: list[str] = []
     log_path = tmp_path / "bot.log"
     with log_path.open("wb") as output:
         process = subprocess.Popen(
@@ -110,7 +118,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                                             "busid": 102,
                                             "uploader": 456,
                                             "uploader_name": "测试成员",
-                                            "upload_time": 1788580800,
+                                            "upload_time": uploaded_at,
                                         }
                                     ]
                                     if group_files
@@ -124,7 +132,19 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                                 group_files.remove(handles[request["params"]["file_id"]])
                                 data = {"result": 0, "errMsg": ""}
                             elif action == "send_group_msg":
-                                reports.append(request["params"]["message"][0]["data"]["text"])
+                                segments = request["params"]["message"]
+                                reports.append(
+                                    "".join(
+                                        segment["data"]["text"]
+                                        for segment in segments
+                                        if segment["type"] == "text"
+                                    )
+                                )
+                                replies.extend(
+                                    segment["data"]["id"]
+                                    for segment in segments
+                                    if segment["type"] == "reply"
+                                )
                                 data = {"message_id": 10}
                             else:
                                 raise AssertionError(action)
@@ -142,9 +162,11 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                     responder = asyncio.create_task(respond())
                     try:
                         await asyncio.wait_for(scan_seen.wait(), timeout=5)
+                        if live:
+                            uploaded_at = int(time.time())
                         group_files.add("file-a")
                         notice = {
-                            "time": 1788580830,
+                            "time": uploaded_at,
                             "self_id": 999,
                             "post_type": "notice",
                             "notice_type": "group_upload",
@@ -159,6 +181,31 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                         }
                         await websocket.send(json.dumps(notice))
                         await websocket.send(json.dumps(notice))
+                        file_message = {
+                            "time": uploaded_at,
+                            "self_id": 999,
+                            "post_type": "message",
+                            "message_type": "group",
+                            "sub_type": "normal",
+                            "group_id": 123,
+                            "user_id": 456,
+                            "message_id": -42,
+                            "message": [
+                                {
+                                    "type": "file",
+                                    "data": {
+                                        "file": "run-20260905-120000-000001.zip",
+                                        "file_id": "native-file-uuid",
+                                        "file_size": str(package.stat().st_size),
+                                    },
+                                }
+                            ],
+                            "raw_message": "",
+                            "font": 0,
+                            "sender": {"user_id": 456, "nickname": "测试成员"},
+                        }
+                        await websocket.send(json.dumps(file_message))
+                        await websocket.send(json.dumps(file_message))
                         for _ in range(200):
                             state = (await http.get("/ptilopsisbot/status", headers=headers)).json()
                             if state["records"] and state["records"][0]["deleted_at"]:
@@ -170,17 +217,18 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                             raise AssertionError(log_path.read_text(encoding="utf-8"))
                         assert group_files == set()
                         assert len(state["records"]) == 1
-                        assert len(reports) == 1
-                        assert "run-20260905-120000-000001.zip" in reports[0]
+                        assert len(reports) == int(live)
+                        assert replies == (["-42"] if live else [])
+                        if live:
+                            assert "run-20260905-120000-000001.zip" in reports[0]
                         saved = tmp_path / "data" / state["records"][0]["archive_path"]
                         assert saved.stat().st_size == package.stat().st_size
                         with ZipFile(saved) as archive:
                             assert archive.testzip() is None
-                        response = await http.post(
-                            "/ptilopsisbot/report/2026-09-05", headers=headers
-                        )
+                        day = datetime.fromtimestamp(uploaded_at, ZoneInfo("Asia/Shanghai")).date()
+                        response = await http.post(f"/ptilopsisbot/report/{day}", headers=headers)
                         assert response.status_code == 200
-                        assert len(reports) == 2
+                        assert len(reports) == int(live) + 1
                         assert "新增唯一包 1" in reports[-1]
                     finally:
                         responder.cancel()

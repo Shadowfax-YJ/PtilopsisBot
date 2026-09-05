@@ -6,11 +6,107 @@ from zipfile import ZipFile
 
 import httpx
 import pytest
-from nonebot.adapters.onebot.v11 import ActionFailed
+from nonebot.adapters.onebot.v11 import ActionFailed, GroupMessageEvent
 
 from ptilopsisbot.collector import Collector, OfflineError
 from ptilopsisbot.config import Settings
 from ptilopsisbot.napcat import NapCat
+
+
+def file_message(message_id: int = -42, **changes: Any) -> GroupMessageEvent:
+    return GroupMessageEvent.model_validate(
+        {
+            "time": 1788580830,
+            "self_id": 999,
+            "post_type": "message",
+            "message_type": "group",
+            "sub_type": "normal",
+            "group_id": 123,
+            "user_id": 456,
+            "message_id": message_id,
+            "message": [
+                {
+                    "type": "file",
+                    "data": {
+                        "file": "run-20260905-120000-000001.zip",
+                        "file_id": "native-file-uuid-not-a-message-id",
+                        "file_size": "100",
+                    },
+                }
+            ],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 456, "nickname": "测试成员"},
+            **changes,
+        }
+    )
+
+
+async def test_live_receipt_quotes_original_message_and_keeps_text_literal() -> None:
+    rpc = FilesRPC()
+    async with httpx.AsyncClient() as http:
+        api = NapCat(123, http, clock=lambda: 1788580800)
+        api.bot = rpc
+        upload = (await api.list_uploads())[0]  # Notice/root scan can arrive first.
+        api.remember_file_message(file_message())
+        text = "已保存 [CQ:at,qq=all]"
+        await api.send_receipt(upload.file_id, upload.busid, text)
+        assert len(rpc.messages) == 1
+        assert [segment.type for segment in rpc.messages[0]] == ["reply", "text"]
+        assert rpc.messages[0][0].data == {"id": "-42"}
+        assert rpc.messages[0][1].data == {"text": text}
+        api.remember_file_message(file_message())
+        await api.send_receipt(upload.file_id, upload.busid, text)
+        assert len(rpc.messages) == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "old_message",
+        "wrong_group",
+        "self_message",
+        "reconnected",
+        "qq_reconnected",
+        "ambiguous_files",
+        "ambiguous_messages",
+        "unrelated_time",
+    ],
+)
+async def test_receipts_stay_silent_without_a_unique_live_source(case: str) -> None:
+    rpc = FilesRPC()
+    now = [1788580800]
+    async with httpx.AsyncClient() as http:
+        api = NapCat(123, http, clock=lambda: now[0])
+        api.bot = rpc
+        upload = (await api.list_uploads())[0]
+        changes: dict[str, Any] = {}
+        if case == "old_message":
+            changes["time"] = now[0] - 1
+        elif case == "wrong_group":
+            changes["group_id"] = 321
+        elif case == "self_message":
+            changes["self_id"] = 456
+        elif case == "unrelated_time":
+            changes["time"] = now[0] + 120
+        api.remember_file_message(file_message(**changes))
+        if case == "reconnected":
+            now[0] += 60
+            api.reset_receipts()
+            api.remember_file_message(file_message())  # An old event is still silent.
+        elif case == "qq_reconnected":
+            rpc.online = False
+            await api.refresh_status()
+            now[0] += 60
+            rpc.online = True
+            await api.refresh_status()
+            api.remember_file_message(file_message())
+        elif case == "ambiguous_files":
+            rpc.files["source-b"] = {**rpc.files["source-a"], "upload_time": now[0] + 1}
+        elif case == "ambiguous_messages":
+            api.remember_file_message(file_message(message_id=43))
+        await api.send_receipt(upload.file_id, upload.busid, "已保存")
+        assert rpc.messages == []
 
 
 class FilesRPC:
@@ -21,6 +117,7 @@ class FilesRPC:
         self.generation = 0
         self.delete_result = 0
         self.handles: dict[str, str] = {}
+        self.messages: list[Any] = []
         self.files = {
             "source-a": {
                 "busid": 102,
@@ -35,6 +132,7 @@ class FilesRPC:
         if api == "get_status":
             return {"online": self.online}
         if api == "send_group_msg":
+            self.messages.append(data["message"])
             return {"message_id": 1}
         if api == "get_group_root_files":
             self.generation += 1
@@ -136,6 +234,7 @@ async def test_restart_reacquires_handle_verifies_content_and_cleans_archived_so
             await collector.process_once()
             assert collector.record(record_id)["status"] == "archived"
             assert "source-a" in rpc.files
+            assert rpc.messages == []  # Startup/backfill collection stays quiet.
         finally:
             collector.close()
 
@@ -152,6 +251,7 @@ async def test_restart_reacquires_handle_verifies_content_and_cleans_archived_so
             assert record["deleted_at"] is not None
             assert (tmp_path / record["archive_path"]).read_bytes() == body
             assert downloaded == ["/source-a", "/source-a"]
+            assert rpc.messages == []
         finally:
             collector.close()
 

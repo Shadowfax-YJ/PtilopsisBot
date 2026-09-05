@@ -34,6 +34,8 @@ class GroupAPI(Protocol):
 
     async def send_message(self, text: str) -> None: ...
 
+    async def send_receipt(self, file_id: str, busid: int, text: str) -> None: ...
+
 
 @dataclass(frozen=True)
 class Upload:
@@ -276,8 +278,10 @@ class Collector:
             if collected and row["collected_at"] is None:
                 # A notice failure must not turn an archived file into a failed download.
                 try:
-                    await self.api.send_message(
-                        messages.receipt(row["name"], row["uploader_id"], row["nickname"])
+                    await self.api.send_receipt(
+                        row["file_id"],
+                        row["busid"],
+                        messages.receipt(row["name"], row["uploader_id"], row["nickname"]),
                     )
                 except Exception as exc:
                     log.warning(

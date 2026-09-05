@@ -52,6 +52,9 @@ class FakeGroup:
             raise self.message_error
         self.messages.append(text)
 
+    async def send_receipt(self, file_id: str, busid: int, text: str) -> None:
+        await self.send_message(text)
+
 
 def zip_bytes() -> bytes:
     stream = io.BytesIO()

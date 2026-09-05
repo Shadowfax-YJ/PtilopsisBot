@@ -1,12 +1,14 @@
 import hashlib
 import json
 import logging
-from collections import Counter
-from dataclasses import replace
+import time
+from collections import Counter, deque
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import httpx
-from nonebot.adapters.onebot.v11 import Message, MessageSegment
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 
 from .collector import OfflineError, Upload
 from .files import download
@@ -18,12 +20,63 @@ class OneBotRPC(Protocol):
     async def call_api(self, api: str, **data: Any) -> Any: ...
 
 
+@dataclass
+class FileMessage:
+    message_id: int
+    uploader_id: int
+    name: str
+    size: int
+    time: int
+    used: bool = False
+
+    def matches(self, upload: Upload) -> bool:
+        # QQ's file upload time and chat message time can differ slightly.
+        return (self.uploader_id, self.name, self.size) == (
+            upload.uploader_id,
+            upload.name,
+            upload.size,
+        ) and abs(self.time - upload.uploaded_at) <= 60
+
+
 class NapCat:
-    def __init__(self, group_id: int, http: httpx.AsyncClient) -> None:
+    def __init__(
+        self, group_id: int, http: httpx.AsyncClient, *, clock: Callable[[], float] = time.time
+    ) -> None:
         self.group_id = group_id
         self.http = http
         self.bot: OneBotRPC | None = None
         self.account_online = False
+        self.clock = clock
+        self.file_messages: deque[FileMessage] = deque(maxlen=1000)
+        self.reset_receipts()
+
+    def reset_receipts(self) -> None:
+        # Reply IDs belong to this live connection; never persist or replay them.
+        self.file_messages.clear()
+        self.receipts_since = int(self.clock())
+
+    def remember_file_message(self, event: GroupMessageEvent) -> None:
+        if (
+            event.group_id != self.group_id
+            or event.user_id == event.self_id
+            or event.time < self.receipts_since
+            or any(message.message_id == event.message_id for message in self.file_messages)
+        ):
+            return
+        files = [segment for segment in event.message if segment.type == "file"]
+        if len(files) != 1:
+            return
+        try:
+            source = FileMessage(
+                event.message_id,
+                event.user_id,
+                str(files[0].data["file"]),
+                int(files[0].data["file_size"]),
+                event.time,
+            )
+        except (KeyError, TypeError, ValueError):
+            return
+        self.file_messages.append(source)
 
     @property
     def online(self) -> bool:
@@ -31,12 +84,17 @@ class NapCat:
 
     async def refresh_status(self) -> bool:
         if self.bot is None:
+            self.reset_receipts()
             self.account_online = False
             return False
         try:
             status = await self.bot.call_api("get_status")
-            self.account_online = status.get("online") is True
+            online = status.get("online") is True
+            if online != self.account_online:
+                self.reset_receipts()
+            self.account_online = online
         except Exception as exc:
+            self.reset_receipts()
             self.account_online = False
             raise OfflineError("无法确认 QQ 在线状态") from exc
         return self.account_online
@@ -134,3 +192,23 @@ class NapCat:
     async def send_message(self, text: str) -> None:
         # Force plain text so group nicknames cannot inject CQ commands.
         await self._call("send_group_msg", message=Message(MessageSegment.text(text)))
+
+    async def send_receipt(self, file_id: str, busid: int, text: str) -> None:
+        if not any(not message.used for message in self.file_messages):
+            return
+        # Resolve only after archiving, so either order of NapCat's notice/message works.
+        uploads = [upload for upload, _ in await self._list_files()]
+        targets = [u for u in uploads if u.file_id == file_id and u.busid == busid]
+        if len(targets) != 1:
+            return
+        matches = [message for message in self.file_messages if message.matches(targets[0])]
+        if len(matches) != 1 or matches[0].used:
+            return
+        source = matches[0]
+        if sum(source.matches(upload) for upload in uploads) != 1:
+            return
+        source.used = True  # Failed sends are not replayed.
+        await self._call(
+            "send_group_msg",
+            message=Message([MessageSegment.reply(source.message_id), MessageSegment.text(text)]),
+        )
