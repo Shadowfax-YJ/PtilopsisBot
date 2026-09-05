@@ -31,27 +31,39 @@ def upload_from_notice(data: dict[str, Any]) -> Upload | None:
         return None
 
 
-class NapCat:
+class LLBot:
     def __init__(self, group_id: int) -> None:
         self.group_id = group_id
         self.bot: OneBotRPC | None = None
+        self.account_online = False
 
     @property
     def online(self) -> bool:
-        return self.bot is not None
+        return self.bot is not None and self.account_online
+
+    async def refresh_status(self) -> bool:
+        if self.bot is None:
+            self.account_online = False
+            return False
+        try:
+            status = await self.bot.call_api("get_status")
+            self.account_online = status.get("online") is True
+        except Exception as exc:
+            self.account_online = False
+            raise OfflineError("无法确认 QQ 在线状态") from exc
+        return self.account_online
 
     async def _call(self, action: str, **data: Any) -> Any:
-        if self.bot is None:
-            raise OfflineError("NapCat 未连接")
+        if not await self.refresh_status():
+            raise OfflineError("QQ 账号未在线")
+        assert self.bot is not None
         return await self.bot.call_api(action, group_id=self.group_id, **data)
 
-    async def list_uploads(self, count: int) -> list[Upload]:
-        response = await self._call("get_group_root_files", file_count=count)
+    async def list_uploads(self) -> list[Upload]:
+        response = await self._call("get_group_root_files")
         files = response["files"]
         if not isinstance(files, list):
-            raise ValueError("NapCat 未返回有效根目录文件列表")
-        if len(files) >= count:
-            log.warning("根目录列表达到 %s 条上限，请检查是否遗漏文件", count)
+            raise ValueError("LLBot 未返回有效根目录文件列表")
         uploads = []
         for file in files:
             try:
@@ -78,24 +90,18 @@ class NapCat:
         response = await self._call("get_group_file_url", file_id=file_id, busid=busid)
         url = response.get("url")
         if not isinstance(url, str) or not url.startswith(("https://", "http://")):
-            raise ValueError("NapCat 未返回 HTTP 下载地址")
+            raise ValueError("LLBot 未返回 HTTP 下载地址")
         return url
 
     async def delete_file(self, file_id: str, busid: int) -> None:
         missing = {"file not found", "文件不存在", "文件已不存在", "群文件不存在"}
         try:
-            response = await self._call("delete_group_file", file_id=file_id, busid=busid)
+            await self._call("delete_group_file", file_id=file_id, busid=busid)
         except ActionFailed as exc:
             message = str(exc.info.get("message") or exc.info.get("wording") or "").strip()
             if message.lower() in missing:
                 raise SourceMissingError(message) from exc
             raise
-        # NapCat wraps the NTQQ result inside a successful OneBot envelope.
-        if isinstance(response, dict) and response.get("result", 0) != 0:
-            message = str(response.get("errMsg") or "NapCat 删除失败").strip()
-            if message.lower() in missing:
-                raise SourceMissingError(message)
-            raise RuntimeError(message)
 
     async def send_report(self, text: str) -> None:
         # Force plain text so group nicknames cannot inject CQ commands.

@@ -21,7 +21,7 @@ def main() -> None:
     retry.add_argument("record_id", type=int)
     report = commands.add_parser("report", help="发送指定日期日报")
     report.add_argument("day", type=date.fromisoformat)
-    report.add_argument("--preview", action="store_true", help="仅本地预览，无需 NapCat 连接")
+    report.add_argument("--preview", action="store_true", help="仅本地预览，无需 LLBot 连接")
     args = parser.parse_args()
     try:
         settings = load_settings(args.config)

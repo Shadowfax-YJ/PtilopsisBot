@@ -1,7 +1,8 @@
 import io
+import struct
 from datetime import date
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
 import pytest
@@ -276,3 +277,35 @@ def test_scan_corrects_day_and_conflicting_metadata_does_not_overwrite_identity(
     assert collector.register(Upload(999, "a", 102, 456, name, 100, 1788580800)) is None
     assert collector.register(Upload(123, "b", 102, 456, name, 100, 1788580800)) != first
     collector.close()
+
+
+async def test_corrupt_deflate_stream_is_invalid_and_never_deleted(tmp_path: Path) -> None:
+    stream = io.BytesIO()
+    with ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("run.json", "test game data" * 100)
+    body = bytearray(stream.getvalue())
+    name_size, extra_size = struct.unpack_from("<HH", body, 26)
+    payload_offset = 30 + name_size + extra_size
+    body[payload_offset] = 0x07  # Invalid DEFLATE block type, leaving the ZIP directory intact.
+    group = FakeGroup()
+    settings = Settings(group_id=123, data_dir=tmp_path, min_free_gib=0, delete_grace_hours=0)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=bytes(body)))
+    ) as http:
+        collector = Collector(settings, api=group, http=http)
+        record_id = collector.register(
+            Upload(
+                123,
+                "file-a",
+                102,
+                456,
+                "run-20260905-120000-000001.zip",
+                len(body),
+                1788580800,
+            )
+        )
+        assert record_id is not None
+        await collector.process_once()
+        assert collector.record(record_id)["status"] == "invalid"
+        assert group.files == {"file-a"}
+        collector.close()

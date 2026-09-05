@@ -1,4 +1,5 @@
 import hashlib
+import zlib
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
@@ -51,7 +52,7 @@ def check_zip(path: Path) -> None:
                         total += len(chunk)
                         if total > limit:
                             raise InvalidPackage("ZIP 实际解压量超限")
-    except (BadZipFile, NotImplementedError, EOFError) as exc:
+    except (BadZipFile, NotImplementedError, EOFError, zlib.error) as exc:
         raise InvalidPackage(f"ZIP 不可读: {exc}") from exc
 
 

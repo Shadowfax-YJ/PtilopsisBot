@@ -82,8 +82,11 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                         async for message in websocket:
                             request = json.loads(message)
                             action = request["action"]
-                            assert request["params"]["group_id"] == 123
-                            if action == "get_group_root_files":
+                            if action != "get_status":
+                                assert request["params"]["group_id"] == 123
+                            if action == "get_status":
+                                data = {"online": True, "good": True}
+                            elif action == "get_group_root_files":
                                 data = {
                                     "files": [
                                         {
@@ -104,7 +107,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                                 data = {"url": f"http://127.0.0.1:{server.server_port}/run.zip"}
                             elif action == "delete_group_file":
                                 group_files.remove(request["params"]["file_id"])
-                                data = {"result": 0, "errMsg": ""}
+                                data = None
                             elif action == "send_group_msg":
                                 reports.append(request["params"]["message"][0]["data"]["text"])
                                 data = {"message_id": 10}

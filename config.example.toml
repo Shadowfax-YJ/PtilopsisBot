@@ -1,4 +1,4 @@
-# Copy to config.toml. Use the same token in NapCat's WebSocket client.
+# Copy to config.toml. Use the same token in LLBot's WebSocket client.
 group_id = 1095012141
 access_token = ""
 port = 8080
@@ -10,4 +10,3 @@ auto_delete = true
 delete_grace_hours = 24
 max_file_mib = 256
 min_free_gib = 2
-root_file_count = 1000

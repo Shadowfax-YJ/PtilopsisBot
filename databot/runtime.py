@@ -15,7 +15,7 @@ from nonebot.drivers.fastapi import Driver
 
 from .collector import SHANGHAI, Collector
 from .config import Settings
-from .napcat import NapCat, upload_from_notice
+from .llbot import LLBot, upload_from_notice
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def run(settings: Settings) -> None:
     assert isinstance(driver, Driver)
     driver.register_adapter(Adapter)
     app = driver.server_app
-    api = NapCat(settings.group_id)
+    api = LLBot(settings.group_id)
     http = httpx.AsyncClient(
         timeout=httpx.Timeout(60, connect=15),
         follow_redirects=True,
@@ -62,7 +62,7 @@ def run(settings: Settings) -> None:
     worker: asyncio.Task[None] | None = None
 
     async def scan() -> int:
-        uploads = await api.list_uploads(settings.root_file_count)
+        uploads = await api.list_uploads()
         count = sum(collector.register(upload) is not None for upload in uploads)
         wake.set()
         await collector.cleanup()
@@ -89,6 +89,7 @@ def run(settings: Settings) -> None:
         while True:
             wake.clear()
             try:
+                await api.refresh_status()
                 if await collector.process_once():
                     last_error = ""
                     continue
@@ -113,7 +114,7 @@ def run(settings: Settings) -> None:
         scheduler.add_job(daily_report, "cron", hour=0, minute=5, max_instances=1, coalesce=True)
         scheduler.start()
         log.info(
-            "目标群 %s，自动清理=%s，宽限期=%s 小时，等待 NapCat 连接",
+            "目标群 %s，自动清理=%s，宽限期=%s 小时，等待 LLBot 连接",
             settings.group_id,
             settings.auto_delete,
             settings.delete_grace_hours,
@@ -134,6 +135,7 @@ def run(settings: Settings) -> None:
             log.warning("已有一个 QQ 账号连接，忽略额外账号")
             return
         api.bot = bot
+        await api.refresh_status()
         wake.set()
         await scheduled_scan()
 
@@ -141,7 +143,8 @@ def run(settings: Settings) -> None:
     async def disconnected(bot: Bot) -> None:
         if api.bot is bot:
             api.bot = None
-            log.warning("NapCat 已断开，暂停采集和清理")
+            api.account_online = False
+            log.warning("LLBot 已断开，暂停采集和清理")
 
     notice = nonebot.on_notice(priority=10, block=False)
 
