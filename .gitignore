@@ -10,5 +10,8 @@ data/
 config.toml
 .env
 .env.*
-.scratch/*.zip
-.scratch/test-*/
+# Local planning, research, and agent notes
+.scratch/
+/CONTEXT.md
+/docs/agents/
+/docs/qq-group-file-bot-feasibility.md

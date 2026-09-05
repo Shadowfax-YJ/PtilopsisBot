@@ -109,6 +109,6 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 
 自动测试覆盖真实 SQLite、临时归档目录、HTTP 流式下载和 OneBot 反向 WebSocket；其中包含 100 MiB ZIP 的本机端到端收集、清理与日报测试。测试使用模拟的 QQ 文件列表，不连接实际 QQ 群。
 
-当前尚未完成真实 NapCat 连接，也没有真实游戏 ZIP 样本。代码和离线验证不能替代真实群验收：安装连接后，使用专门测试上传确认群文件被移除、本地 ZIP 可读、日报仍保留贡献；同时检查实际根目录列表，并重启 NapCat 后验证到期删源。验收完成前，[地图](.scratch/qq-group-run-collector/map.md)中的真实环境事项保持待验收。
+当前尚未完成真实 NapCat 连接，也没有真实游戏 ZIP 样本。代码和离线验证不能替代真实群验收：安装连接后，使用专门测试上传确认群文件被移除、本地 ZIP 可读、日报仍保留贡献；同时检查实际根目录列表，并重启 NapCat 后验证到期删源。
 
 接入依据：[NapCat 临时 ID 缓存](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-common/src/file-uuid.ts)、[根目录字段映射](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/helper/data.ts)、[删除接口](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/action/go-cqhttp/DeleteGroupFile.ts)。当前只支持 NapCat，不保留双接入端或通用兼容层。
