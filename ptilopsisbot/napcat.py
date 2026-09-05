@@ -48,12 +48,15 @@ class NapCat:
         self.account_online = False
         self.clock = clock
         self.file_messages: deque[FileMessage] = deque(maxlen=1000)
+        self.on_receipts_reset: Callable[[], None] | None = None
         self.reset_receipts()
 
     def reset_receipts(self) -> None:
         # Reply IDs belong to this live connection; never persist or replay them.
         self.file_messages.clear()
         self.receipts_since = int(self.clock())
+        if self.on_receipts_reset is not None:
+            self.on_receipts_reset()
 
     def remember_file_message(self, event: GroupMessageEvent) -> None:
         if (

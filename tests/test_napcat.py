@@ -85,6 +85,42 @@ async def test_zero_time_live_upload_uses_message_date_without_changing_identity
             collector.close()
 
 
+async def test_qq_reconnect_releases_reserved_slot_without_websocket_disconnect(
+    tmp_path: Path,
+) -> None:
+    rpc = FilesRPC()
+    now = [1788580800.0]
+    async with httpx.AsyncClient() as http:
+        api = NapCat(123, http, clock=lambda: now[0])
+        api.bot = rpc
+        collector = Collector(
+            Settings(group_id=123, data_dir=tmp_path, min_free_gib=0),
+            api=api,
+            http=http,
+        )
+        api.on_receipts_reset = collector.reset_priority
+        try:
+            await api.refresh_status()
+            api.remember_file_message(file_message())
+            upload = (await api.list_uploads())[0]
+            assert upload.live
+            record_id = collector.register(upload)
+            assert record_id in collector.live_records
+            rpc.online = False
+            assert not await api.refresh_status()
+            rpc.online = True
+            now[0] += 120
+            assert await api.refresh_status()
+            old_upload = (await api.list_uploads())[0]
+            assert not old_upload.live
+            assert collector.register(old_upload) == record_id
+            assert not collector.live_records
+            assert not await collector.process_once(live_only=True)
+            assert api.bot is rpc  # WebSocket connection itself never changed.
+        finally:
+            collector.close()
+
+
 async def test_message_arriving_during_download_corrects_date_before_archive_and_delete(
     tmp_path: Path,
 ) -> None:

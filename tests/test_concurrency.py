@@ -198,6 +198,60 @@ async def test_shutdown_releases_files_and_preserves_retry_budget(
             collector.close()
 
 
+async def test_cleanup_waits_for_receipt_without_blocking_other_uploads(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowReceipt(Group):
+        async def send_receipt(self, file_id: str, busid: int, text: str) -> bool:
+            if file_id == "file-a":
+                entered.set()
+                await release.wait()
+            return await super().send_receipt(file_id, busid, text)
+
+    body = zip_bytes()
+    group = SlowReceipt()
+    group.files.add("file-b")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    ) as http:
+        collector = Collector(
+            Settings(group_id=123, data_dir=tmp_path, delete_grace_hours=0, min_free_gib=0),
+            api=group,
+            http=http,
+        )
+        for key in ("file-a", "file-b"):
+            collector.register(
+                Upload(
+                    123,
+                    key,
+                    102,
+                    456,
+                    "run-20260905-120000-000001.zip",
+                    len(body),
+                    1788580800,
+                )
+            )
+        sending = asyncio.create_task(collector.process_once())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            assert collector.record(1)["status"] == "archived"
+            assert await asyncio.wait_for(collector.process_once(), 2)
+            await asyncio.wait_for(collector.cleanup(), 2)
+            assert group.files == {"file-a"}
+            assert collector.record(1)["deleted_at"] is None
+            assert collector.record(2)["deleted_at"] is not None
+            release.set()
+            await sending
+            await collector.cleanup()
+            assert not group.files
+            assert len(group.messages) == 2
+        finally:
+            release.set()
+            await asyncio.gather(sending, return_exceptions=True)
+            collector.close()
+
+
 async def test_live_slot_stays_free_for_new_uploads_while_history_is_downloading(
     tmp_path: Path,
 ) -> None:

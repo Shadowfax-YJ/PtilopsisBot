@@ -59,6 +59,7 @@ def run(settings: Settings) -> None:
     )
     api = NapCat(settings.group_id, http)
     collector = Collector(settings, api=api, http=http)
+    api.on_receipts_reset = collector.reset_priority
     download_wake = asyncio.Event()
     scan_wake = asyncio.Event()
     cleanup_wake = asyncio.Event()
@@ -189,7 +190,6 @@ def run(settings: Settings) -> None:
             return
         api.bot = bot
         api.reset_receipts()
-        collector.reset_priority()
         await api.refresh_status()
         download_wake.set()
         await scheduled_scan()
@@ -200,7 +200,6 @@ def run(settings: Settings) -> None:
             api.bot = None
             api.account_online = False
             api.reset_receipts()
-            collector.reset_priority()
             log.warning("NapCat 已断开，暂停采集和清理")
 
     notice = nonebot.on_notice(priority=10, block=False)
