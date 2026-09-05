@@ -34,7 +34,7 @@ class GroupAPI(Protocol):
 
     async def send_message(self, text: str) -> None: ...
 
-    async def send_receipt(self, file_id: str, busid: int, text: str) -> None: ...
+    async def send_receipt(self, file_id: str, busid: int, text: str) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,7 @@ class Upload:
     uploaded_at: float
     nickname: str = ""
     from_scan: bool = False
+    time_source: str = "qq"
 
 
 class Collector:
@@ -94,10 +95,48 @@ class Collector:
                 UNIQUE (group_id, file_id, busid)
             )
         """)
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(uploads)")}
+        if "time_source" not in columns:
+            self.db.execute("ALTER TABLE uploads ADD COLUMN time_source TEXT NOT NULL DEFAULT 'qq'")
         self.db.commit()
 
     def close(self) -> None:
         self.db.close()
+
+    def repair_dates(self) -> None:
+        """Repair legacy zero timestamps before the worker starts, including deleted sources."""
+        for row in self.db.execute("SELECT * FROM uploads WHERE uploaded_at<=0").fetchall():
+            # Legacy rows did not store first_seen; use the earliest retained observation.
+            known = [t for t in (row["nickname_at"], row["collected_at"]) if t and t > 0]
+            observed = min(known) if known else self.clock()
+            relative = row["archive_path"]
+            try:
+                if relative:
+                    day = datetime.fromtimestamp(observed, SHANGHAI).date()
+                    corrected = f"archive/{day}/{row['uploader_id']}/{row['id']}.zip"
+                    root = self.settings.data_dir.resolve()
+                    old = (root / relative).resolve()
+                    new = (root / corrected).resolve()
+                    if not old.is_relative_to(root) or not new.is_relative_to(root):
+                        raise ValueError("归档路径超出数据目录")
+                    if old != new:
+                        if old.exists():
+                            if new.exists():
+                                raise FileExistsError("日期修正目标已存在，保留两个文件等待检查")
+                            new.parent.mkdir(parents=True, exist_ok=True)
+                            old.rename(new)
+                        elif not file_matches(new, row["size"], row["sha256"]):
+                            raise FileNotFoundError("找不到原归档或上次已移动的完整归档")
+                    relative = corrected
+                with self.db:
+                    self.db.execute(
+                        """UPDATE uploads SET uploaded_at=?,time_source='observed',archive_path=?
+                           WHERE id=?""",
+                        (observed, relative, row["id"]),
+                    )
+                log.info("已修正上传记录 %s 的缺失日期，按已知发现日期归档", row["id"])
+            except (OSError, ValueError) as exc:
+                log.error("上传记录 %s 日期修正失败: %s", row["id"], exc)
 
     def record(self, record_id: int) -> sqlite3.Row:
         row = self.db.execute("SELECT * FROM uploads WHERE id=?", (record_id,)).fetchone()
@@ -144,7 +183,11 @@ class Collector:
             ).fetchone()
             nickname = " ".join(str(latest["nickname"]).split()) if latest else str(user)
             lines.append(f"{nickname}（{user}）：上传 {uploads}，新增唯一包 {unique}。")
-        return messages.report(day, lines, pending=pending, invalid=invalid, failed=failed)
+        text = messages.report(day, lines, pending=pending, invalid=invalid, failed=failed)
+        observed = sum(row["time_source"] == "observed" for row in rows)
+        if observed:
+            text += f"\n日期说明：{observed} 次记录缺少上传时间，按发现日期统计。"
+        return text
 
     def register(self, upload: Upload) -> int | None:
         if (
@@ -161,12 +204,14 @@ class Collector:
             datetime.fromtimestamp(upload.uploaded_at, SHANGHAI)
         except (ValueError, OverflowError, OSError):
             return None
+        uploaded_at = upload.uploaded_at if upload.uploaded_at > 0 else self.clock()
+        time_source = upload.time_source if upload.uploaded_at > 0 else "observed"
         with self.db:
             self.db.execute(
                 """INSERT OR IGNORE INTO uploads
                    (group_id,file_id,busid,uploader_id,name,size,uploaded_at,
-                    run_time,nickname,nickname_at,from_scan)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    run_time,nickname,nickname_at,from_scan,time_source)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     upload.group_id,
                     upload.file_id,
@@ -174,11 +219,12 @@ class Collector:
                     upload.uploader_id,
                     upload.name,
                     upload.size,
-                    upload.uploaded_at,
+                    uploaded_at,
                     run_time.replace(tzinfo=SHANGHAI).isoformat(),
                     upload.nickname,
                     self.clock(),
                     upload.from_scan,
+                    time_source,
                 ),
             )
             row = self.db.execute(
@@ -198,10 +244,10 @@ class Collector:
                     "UPDATE uploads SET nickname=?, nickname_at=? WHERE id=?",
                     (upload.nickname, self.clock(), row["id"]),
                 )
-            if upload.from_scan:
+            if upload.from_scan and upload.uploaded_at > 0:
                 self.db.execute(
-                    "UPDATE uploads SET uploaded_at=?, from_scan=1 WHERE id=?",
-                    (upload.uploaded_at, row["id"]),
+                    "UPDATE uploads SET uploaded_at=?, time_source=?, from_scan=1 WHERE id=?",
+                    (uploaded_at, time_source, row["id"]),
                 )
         return int(row["id"])
 
@@ -241,9 +287,21 @@ class Collector:
             try:
                 url = await self.api.file_url(row["file_id"], row["busid"])
                 digest = await download(
-                    self.http, url, part, row["size"], self.settings.max_file_mib * 1024**2
+                    self.http,
+                    url,
+                    part,
+                    row["size"],
+                    self.settings.max_file_mib * 1024**2,
+                    label=f"上传记录 {record_id} 下载归档",
                 )
+                checked_at = time.perf_counter()
+                log.info("上传记录 %s 开始 ZIP 检查", record_id)
                 await asyncio.to_thread(check_zip, part)
+                log.info(
+                    "上传记录 %s ZIP 检查通过，耗时 %.1f 秒",
+                    record_id,
+                    time.perf_counter() - checked_at,
+                )
                 day = datetime.fromtimestamp(row["uploaded_at"], SHANGHAI).date()
                 relative = f"archive/{day}/{row['uploader_id']}/{record_id}.zip"
                 target = self.settings.data_dir / relative
@@ -278,11 +336,16 @@ class Collector:
             if collected and row["collected_at"] is None:
                 # A notice failure must not turn an archived file into a failed download.
                 try:
-                    await self.api.send_receipt(
+                    sent = await self.api.send_receipt(
                         row["file_id"],
                         row["busid"],
                         messages.receipt(row["name"], row["uploader_id"], row["nickname"]),
                     )
+                    if not sent:
+                        log.info(
+                            "上传记录 %s 已归档，跳过回执（历史补扫或缺少唯一的当前文件消息）",
+                            record_id,
+                        )
                 except Exception as exc:
                     log.warning(
                         "上传记录 %s 的收包回复发送失败 (%s)", record_id, type(exc).__name__
@@ -331,8 +394,15 @@ class Collector:
         for row in rows:
             try:
                 path = self.settings.data_dir / row["archive_path"]
+                checked_at = time.perf_counter()
+                log.info("上传记录 %s 开始删源前本地归档校验", row["id"])
                 if not await asyncio.to_thread(file_matches, path, row["size"], row["sha256"]):
                     raise ValueError("本地文件不存在或大小/哈希不符，请重试此上传记录")
+                log.info(
+                    "上传记录 %s 本地归档校验通过，耗时 %.1f 秒",
+                    row["id"],
+                    time.perf_counter() - checked_at,
+                )
                 if not self.can_work():
                     return
                 await self.api.delete_file(

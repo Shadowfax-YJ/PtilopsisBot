@@ -1,12 +1,15 @@
 import hashlib
+import logging
 import zlib
 from contextlib import nullcontext
 from pathlib import Path
+from time import perf_counter
 from zipfile import BadZipFile, ZipFile
 
 import httpx
 
 CHUNK = 256 * 1024
+log = logging.getLogger(__name__)
 
 
 class InvalidPackage(ValueError):
@@ -14,10 +17,18 @@ class InvalidPackage(ValueError):
 
 
 async def download(
-    http: httpx.AsyncClient, url: str, target: Path | None, expected_size: int, max_size: int
+    http: httpx.AsyncClient,
+    url: str,
+    target: Path | None,
+    expected_size: int,
+    max_size: int,
+    *,
+    label: str = "下载",
 ) -> str:
     digest = hashlib.sha256()
     total = 0
+    started = last_progress = perf_counter()
+    log.info("%s 开始，共 %.1f MiB", label, expected_size / 1024**2)
     async with http.stream("GET", url, headers={"Accept-Encoding": "identity"}) as response:
         response.raise_for_status()
         if response.headers.get("Content-Encoding", "identity") != "identity":
@@ -34,8 +45,21 @@ async def download(
                 if output is not None:
                     output.write(chunk)
                 digest.update(chunk)
+                now = perf_counter()
+                if now - last_progress >= 10:
+                    log.info(
+                        "%s %.0f%%，%.1f/%.1f MiB，平均 %.2f MiB/s",
+                        label,
+                        total * 100 / expected_size,
+                        total / 1024**2,
+                        expected_size / 1024**2,
+                        total / 1024**2 / max(now - started, 0.001),
+                    )
+                    last_progress = now
     if total != expected_size:
         raise ValueError("下载不完整，实收大小与群文件声明不符")
+    elapsed = max(perf_counter() - started, 0.001)
+    log.info("%s 完成，耗时 %.1f 秒，平均 %.2f MiB/s", label, elapsed, total / 1024**2 / elapsed)
     return digest.hexdigest()
 
 

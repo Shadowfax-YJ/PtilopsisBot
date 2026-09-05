@@ -22,10 +22,15 @@ def free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-@pytest.mark.parametrize("live", [True, False], ids=["live-quoted", "backfill-silent"])
+@pytest.mark.parametrize(
+    ("live", "missing_time"),
+    [(True, False), (False, False), (True, True)],
+    ids=["live-quoted", "backfill-silent", "live-quoted-zero-time"],
+)
 async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
     tmp_path: Path,
     live: bool,
+    missing_time: bool,
 ) -> None:
     package = tmp_path / "sample.zip"
     with ZipFile(package, "w") as archive:
@@ -118,7 +123,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                                             "busid": 102,
                                             "uploader": 456,
                                             "uploader_name": "测试成员",
-                                            "upload_time": uploaded_at,
+                                            "upload_time": 0 if missing_time else uploaded_at,
                                         }
                                     ]
                                     if group_files
@@ -217,6 +222,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                             raise AssertionError(log_path.read_text(encoding="utf-8"))
                         assert group_files == set()
                         assert len(state["records"]) == 1
+                        assert "1970-01-01" not in state["records"][0]["archive_path"]
                         assert len(reports) == int(live)
                         assert replies == (["-42"] if live else [])
                         if live:
@@ -230,6 +236,15 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                         assert response.status_code == 200
                         assert len(reports) == int(live) + 1
                         assert "新增唯一包 1" in reports[-1]
+                        logs = log_path.read_text(encoding="utf-8")
+                        assert "下载归档 完成" in logs
+                        assert "删源前远端校验" in logs
+                        assert "MiB/s" in logs
+                        if live:
+                            assert "收包回复已发送" in logs
+                            assert "源消息=-42，回复消息=10" in logs
+                        else:
+                            assert "跳过回执" in logs
                     finally:
                         responder.cancel()
                         await asyncio.gather(responder, return_exceptions=True)

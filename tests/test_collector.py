@@ -1,4 +1,6 @@
+import hashlib
 import io
+import sqlite3
 import struct
 from datetime import date
 from pathlib import Path
@@ -9,6 +11,61 @@ import pytest
 
 from ptilopsisbot.collector import Collector, Upload
 from ptilopsisbot.config import Settings
+
+
+@pytest.mark.parametrize("move_done", [False, True])
+def test_legacy_zero_date_repair_preserves_archives_records_and_cleanup_state(
+    tmp_path: Path,
+    move_done: bool,
+) -> None:
+    settings = Settings(group_id=123, data_dir=tmp_path)
+    body = zip_bytes()
+    collector = Collector(settings, clock=lambda: 1788611560)
+    for file_id in ("file-a", "file-b"):
+        collector.register(
+            Upload(
+                123,
+                file_id,
+                104,
+                456,
+                "run-20260905-172518-248257.zip",
+                len(body),
+                1788611560,
+            )
+        )
+    collector.close()
+    old = tmp_path / "archive/1970-01-01/456/1.zip"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(body)
+    new = tmp_path / "archive/2026-09-05/456/1.zip"
+    if move_done:
+        new.parent.mkdir(parents=True)
+        old.rename(new)  # Simulate interruption between move and database commit.
+    with sqlite3.connect(tmp_path / "collector.sqlite3") as legacy:
+        legacy.execute("ALTER TABLE uploads DROP COLUMN time_source")
+        legacy.execute("UPDATE uploads SET uploaded_at=0")
+        legacy.execute(
+            """UPDATE uploads SET status='archived',sha256=?,archive_path=?,
+               collected_at=1788611699.686,deleted_at=1788611827.222 WHERE id=1""",
+            (hashlib.sha256(body).hexdigest(), "archive/1970-01-01/456/1.zip"),
+        )
+    for _ in range(2):
+        collector = Collector(settings, clock=lambda: 1788697960)
+        try:
+            collector.repair_dates()
+            record = collector.record(1)
+            assert record["archive_path"] == "archive/2026-09-05/456/1.zip"
+            assert record["deleted_at"] == 1788611827.222
+            assert record["collected_at"] == 1788611699.686
+            assert record["time_source"] == "observed"
+            assert collector.record(2)["status"] == "queued"
+            assert collector.record(2)["uploaded_at"] == 1788611560
+            assert len(collector.records()) == 2
+            assert "上传 2，新增唯一包 1" in collector.report(date(2026, 9, 5))
+            assert new.read_bytes() == body
+            assert not old.exists()
+        finally:
+            collector.close()
 
 
 def test_repeat_observation_survives_restart_without_double_counting(tmp_path: Path) -> None:
@@ -52,8 +109,9 @@ class FakeGroup:
             raise self.message_error
         self.messages.append(text)
 
-    async def send_receipt(self, file_id: str, busid: int, text: str) -> None:
+    async def send_receipt(self, file_id: str, busid: int, text: str) -> bool:
         await self.send_message(text)
+        return True
 
 
 def zip_bytes() -> bytes:

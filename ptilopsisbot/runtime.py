@@ -112,6 +112,7 @@ def run(settings: Settings) -> None:
     @driver.on_startup
     async def start() -> None:
         nonlocal worker
+        collector.repair_dates()
         worker = asyncio.create_task(work())
         scheduler.add_job(scheduled_scan, "interval", minutes=30, max_instances=1, coalesce=True)
         scheduler.add_job(daily_report, "cron", hour=0, minute=5, max_instances=1, coalesce=True)

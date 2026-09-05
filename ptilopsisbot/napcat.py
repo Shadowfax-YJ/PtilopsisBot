@@ -35,7 +35,7 @@ class FileMessage:
             upload.uploader_id,
             upload.name,
             upload.size,
-        ) and abs(self.time - upload.uploaded_at) <= 60
+        ) and (upload.uploaded_at <= 0 or abs(self.time - upload.uploaded_at) <= 60)
 
 
 class NapCat:
@@ -110,7 +110,31 @@ class NapCat:
         counts = Counter(upload.file_id for upload, _ in files)
         if any(count > 1 for count in counts.values()):
             log.warning("多个群文件的上传信息完全相同，暂不收集或清理这些文件")
-        return [upload for upload, _ in files if counts[upload.file_id] == 1]
+        all_uploads = [upload for upload, _ in files]
+        uploads = []
+        missing_times = 0
+        for upload in all_uploads:
+            if counts[upload.file_id] != 1:
+                continue
+            if upload.uploaded_at <= 0:
+                missing_times += 1
+                source = self._matching_message(upload, all_uploads)
+                if source is not None:
+                    # Keep the raw observation key: inferred dates must not change identity.
+                    upload = replace(upload, uploaded_at=float(source.time), time_source="message")
+            uploads.append(upload)
+        if missing_times:
+            log.warning(
+                "%s 个群文件没有有效上传时间，按文件消息时间或首次发现时间登记", missing_times
+            )
+        return uploads
+
+    def _matching_message(self, upload: Upload, uploads: list[Upload]) -> FileMessage | None:
+        matches = [message for message in self.file_messages if message.matches(upload)]
+        if len(matches) != 1:
+            return None
+        source = matches[0]
+        return source if sum(source.matches(candidate) for candidate in uploads) == 1 else None
 
     async def _list_files(self) -> list[tuple[Upload, str]]:
         # NapCat defaults to 50 entries. Keep this request bounded for a small group.
@@ -132,7 +156,7 @@ class NapCat:
                     int(file["uploader"]),
                     str(file["file_name"]),
                     int(file["file_size"]),
-                    float(file["upload_time"]),
+                    float(file.get("upload_time") or 0),
                     str(file.get("uploader_name") or ""),
                     True,
                 )
@@ -179,7 +203,14 @@ class NapCat:
 
     async def delete_file(self, file_id: str, busid: int, *, expected_hash: str) -> None:
         upload, handle = await self._resolve(file_id, busid)
-        digest = await download(self.http, await self._url(handle), None, upload.size, upload.size)
+        digest = await download(
+            self.http,
+            await self._url(handle),
+            None,
+            upload.size,
+            upload.size,
+            label=f"删源前远端校验 {upload.name}",
+        )
         if digest != expected_hash:
             raise ValueError("远端候选文件内容与本地归档不符，保留源文件")
         # Use exactly the handle whose content was checked. Never rebind on delete failure.
@@ -193,29 +224,34 @@ class NapCat:
         # Force plain text so group nicknames cannot inject CQ commands.
         await self._call("send_group_msg", message=Message(MessageSegment.text(text)))
 
-    async def send_receipt(self, file_id: str, busid: int, text: str) -> None:
+    async def send_receipt(self, file_id: str, busid: int, text: str) -> bool:
         if not any(not message.used for message in self.file_messages):
-            return
+            return False
         # Match at send time: a file message may arrive after the initial root scan.
         uploads = [upload for upload, _ in await self._list_files()]
         targets = [u for u in uploads if u.file_id == file_id and u.busid == busid]
-        if len(targets) != 1 or targets[0].uploaded_at < self.receipts_since:
-            return
-        matches = [message for message in self.file_messages if message.matches(targets[0])]
-        if len(matches) != 1 or matches[0].used:
-            return
-        source = matches[0]
-        if sum(source.matches(upload) for upload in uploads) != 1:
-            return
+        if len(targets) != 1 or 0 < targets[0].uploaded_at < self.receipts_since:
+            return False
+        source = self._matching_message(targets[0], uploads)
+        if source is None or source.used:
+            return False
         source.used = True  # Failed sends are not replayed.
         if not await self.refresh_status():
-            return
+            return False
         # A reconnect during the status call invalidates even the source selected above.
         if not any(message is source for message in self.file_messages):
-            return
+            return False
         assert self.bot is not None
-        await self.bot.call_api(
+        result = await self.bot.call_api(
             "send_group_msg",
             group_id=self.group_id,
             message=Message([MessageSegment.reply(source.message_id), MessageSegment.text(text)]),
         )
+        reply_id = result.get("message_id", "未知") if isinstance(result, dict) else "未知"
+        log.info(
+            "收包回复已发送：文件=%s，源消息=%s，回复消息=%s",
+            source.name,
+            source.message_id,
+            reply_id,
+        )
+        return True

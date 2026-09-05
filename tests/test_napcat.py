@@ -1,5 +1,6 @@
 import hashlib
 import io
+from datetime import date
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -11,6 +12,77 @@ from nonebot.adapters.onebot.v11 import ActionFailed, GroupMessageEvent
 from ptilopsisbot.collector import Collector, OfflineError
 from ptilopsisbot.config import Settings
 from ptilopsisbot.napcat import NapCat
+
+
+async def test_zero_upload_time_archives_on_observation_day_and_counts_in_report(
+    tmp_path: Path,
+) -> None:
+    stream = io.BytesIO()
+    with ZipFile(stream, "w") as archive:
+        archive.writestr("run.json", "{}")
+    body = stream.getvalue()
+    rpc = FilesRPC(len(body))
+    rpc.files["source-a"]["upload_time"] = 0
+    now = 1788611560.0  # 2026-09-05 20:32:40 Asia/Shanghai, from the user's log.
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    ) as http:
+        api = NapCat(123, http, clock=lambda: now)
+        api.bot = rpc
+        collector = Collector(
+            Settings(group_id=123, data_dir=tmp_path, auto_delete=False, min_free_gib=0),
+            api=api,
+            http=http,
+            clock=lambda: now,
+        )
+        try:
+            record_id = collector.register((await api.list_uploads())[0])
+            assert record_id is not None
+            await collector.process_once()
+            record = collector.record(record_id)
+            assert record["archive_path"] == "archive/2026-09-05/456/1.zip"
+            assert "上传 1，新增唯一包 1" in collector.report(date(2026, 9, 5))
+            assert "发现日期" in collector.report(date(2026, 9, 5))
+            assert rpc.messages == []
+        finally:
+            collector.close()
+
+
+async def test_zero_time_live_upload_uses_message_date_without_changing_identity(
+    tmp_path: Path,
+) -> None:
+    rpc = FilesRPC()
+    rpc.files["source-a"]["upload_time"] = 0
+    now = [1788580800.0]
+    settings = Settings(group_id=123, data_dir=tmp_path)
+    async with httpx.AsyncClient() as http:
+        api = NapCat(123, http, clock=lambda: now[0])
+        api.bot = rpc
+        collector = Collector(settings, clock=lambda: now[0])
+        first = (await api.list_uploads())[0]
+        record_id = collector.register(first)
+        assert record_id is not None
+        api.remember_file_message(file_message())
+        from_message = (await api.list_uploads())[0]
+        assert from_message.file_id == first.file_id
+        assert from_message.uploaded_at == 1788580830
+        collector.register(from_message)
+        assert collector.record(record_id)["time_source"] == "message"
+        await api.send_receipt(first.file_id, first.busid, "已保存")
+        assert rpc.messages[0][0].data == {"id": "-42"}
+        collector.close()
+
+        now[0] += 86400
+        api = NapCat(123, http, clock=lambda: now[0])
+        api.bot = rpc
+        collector = Collector(settings, clock=lambda: now[0])
+        try:
+            assert collector.register((await api.list_uploads())[0]) == record_id
+            assert len(collector.records()) == 1
+            assert collector.record(record_id)["uploaded_at"] == 1788580830
+            assert collector.record(record_id)["time_source"] == "message"
+        finally:
+            collector.close()
 
 
 def file_message(message_id: int = -42, **changes: Any) -> GroupMessageEvent:
