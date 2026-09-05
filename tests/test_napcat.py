@@ -64,6 +64,7 @@ async def test_live_receipt_quotes_original_message_and_keeps_text_literal() -> 
     "case",
     [
         "old_message",
+        "before_connection_file",
         "wrong_group",
         "self_message",
         "reconnected",
@@ -83,6 +84,9 @@ async def test_receipts_stay_silent_without_a_unique_live_source(case: str) -> N
         changes: dict[str, Any] = {}
         if case == "old_message":
             changes["time"] = now[0] - 1
+        elif case == "before_connection_file":
+            rpc.files["source-a"]["upload_time"] = now[0] - 10
+            upload = (await api.list_uploads())[0]
         elif case == "wrong_group":
             changes["group_id"] = 321
         elif case == "self_message":
@@ -105,6 +109,29 @@ async def test_receipts_stay_silent_without_a_unique_live_source(case: str) -> N
             rpc.files["source-b"] = {**rpc.files["source-a"], "upload_time": now[0] + 1}
         elif case == "ambiguous_messages":
             api.remember_file_message(file_message(message_id=43))
+        await api.send_receipt(upload.file_id, upload.busid, "已保存")
+        assert rpc.messages == []
+
+
+async def test_reconnect_during_final_status_check_does_not_send_old_reply_id() -> None:
+    class ReconnectingRPC(FilesRPC):
+        armed = False
+        status_checks = 0
+
+        async def call_api(self, action: str, **data: Any) -> object:
+            if action == "get_status" and self.armed:
+                self.status_checks += 1
+                if self.status_checks == 2:  # Final online check before sending.
+                    api.reset_receipts()
+            return await super().call_api(action, **data)
+
+    rpc = ReconnectingRPC()
+    async with httpx.AsyncClient() as http:
+        api = NapCat(123, http, clock=lambda: 1788580800)
+        api.bot = rpc
+        upload = (await api.list_uploads())[0]
+        api.remember_file_message(file_message())
+        rpc.armed = True
         await api.send_receipt(upload.file_id, upload.busid, "已保存")
         assert rpc.messages == []
 

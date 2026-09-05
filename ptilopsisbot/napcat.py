@@ -196,10 +196,10 @@ class NapCat:
     async def send_receipt(self, file_id: str, busid: int, text: str) -> None:
         if not any(not message.used for message in self.file_messages):
             return
-        # Resolve only after archiving, so either order of NapCat's notice/message works.
+        # Match at send time: a file message may arrive after the initial root scan.
         uploads = [upload for upload, _ in await self._list_files()]
         targets = [u for u in uploads if u.file_id == file_id and u.busid == busid]
-        if len(targets) != 1:
+        if len(targets) != 1 or targets[0].uploaded_at < self.receipts_since:
             return
         matches = [message for message in self.file_messages if message.matches(targets[0])]
         if len(matches) != 1 or matches[0].used:
@@ -208,7 +208,14 @@ class NapCat:
         if sum(source.matches(upload) for upload in uploads) != 1:
             return
         source.used = True  # Failed sends are not replayed.
-        await self._call(
+        if not await self.refresh_status():
+            return
+        # A reconnect during the status call invalidates even the source selected above.
+        if not any(message is source for message in self.file_messages):
+            return
+        assert self.bot is not None
+        await self.bot.call_api(
             "send_group_msg",
+            group_id=self.group_id,
             message=Message([MessageSegment.reply(source.message_id), MessageSegment.text(text)]),
         )
