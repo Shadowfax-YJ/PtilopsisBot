@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import partial
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -14,7 +15,7 @@ import httpx
 
 from . import messages
 from .config import Settings
-from .files import InvalidPackage, check_zip, download, file_matches
+from .files import InvalidPackage, check_zip, download, file_check, file_matches
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 log = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class Upload:
     nickname: str = ""
     from_scan: bool = False
     time_source: str = "qq"
+    live: bool = False
 
 
 class Collector:
@@ -66,7 +68,9 @@ class Collector:
         self.api = api
         self.http = http
         self.clock = clock
-        self.lock = asyncio.Lock()
+        self.cleanup_lock = asyncio.Lock()
+        self.active: dict[int, str] = {}
+        self.live_records: set[int] = set()
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(settings.data_dir / "collector.sqlite3", timeout=5)
         self.db.row_factory = sqlite3.Row
@@ -104,6 +108,9 @@ class Collector:
 
     def close(self) -> None:
         self.db.close()
+
+    def reset_priority(self) -> None:
+        self.live_records.clear()
 
     def repair_dates(self) -> None:
         """Repair legacy zero timestamps before the worker starts, including deleted sources."""
@@ -251,6 +258,8 @@ class Collector:
                     "UPDATE uploads SET uploaded_at=?, time_source=?, from_scan=1 WHERE id=?",
                     (uploaded_at, time_source, row["id"]),
                 )
+        if upload.live and row["collected_at"] is None:
+            self.live_records.add(int(row["id"]))
         return int(row["id"])
 
     def can_work(self) -> bool:
@@ -263,113 +272,141 @@ class Collector:
             self.db.execute("UPDATE uploads SET id=id WHERE id=-1")
         return True
 
-    async def process_once(self) -> bool:
-        async with self.lock:
-            if not self.can_work():
-                return False
-            assert self.api is not None and self.http is not None
-            row = self.db.execute(
-                """SELECT * FROM uploads WHERE group_id=? AND
-                   (status='queued' OR (status='failed' AND attempts<3 AND next_attempt_at<=?))
-                   ORDER BY id LIMIT 1""",
-                (self.settings.group_id, self.clock()),
-            ).fetchone()
-            if row is None:
-                return False
-            record_id = row["id"]
-            incoming = self.settings.data_dir / "incoming"
-            incoming.mkdir(exist_ok=True)
-            part = incoming / f"{record_id}.part"
-            with self.db:
-                self.db.execute(
-                    "UPDATE uploads SET status='queued', attempts=attempts+1 WHERE id=?",
-                    (record_id,),
-                )
-            collected = False
-            try:
-                url = await self.api.file_url(row["file_id"], row["busid"])
-                digest = await download(
-                    self.http,
-                    url,
-                    part,
-                    row["size"],
-                    self.settings.max_file_mib * 1024**2,
-                    label=f"上传记录 {record_id} 下载归档",
-                )
-                checked_at = time.perf_counter()
-                log.info("上传记录 %s 开始 ZIP 检查", record_id)
-                await asyncio.to_thread(check_zip, part)
-                log.info(
-                    "上传记录 %s ZIP 检查通过，耗时 %.1f 秒",
-                    record_id,
-                    time.perf_counter() - checked_at,
-                )
-                if row["time_source"] == "observed":
-                    # The chat event may have arrived while the ZIP was downloading.
-                    try:
-                        uploads = await self.api.list_uploads()
-                    except Exception as exc:
-                        log.warning(
-                            "上传记录 %s 时间补正失败 (%s)，保留发现日期",
-                            record_id,
-                            type(exc).__name__,
-                        )
-                    else:
-                        for upload in uploads:
-                            if (upload.file_id, upload.busid) == (row["file_id"], row["busid"]):
-                                self.register(upload)
-                                row = self.record(record_id)
-                                break
-                day = datetime.fromtimestamp(row["uploaded_at"], SHANGHAI).date()
-                relative = f"archive/{day}/{row['uploader_id']}/{record_id}.zip"
-                target = self.settings.data_dir / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                part.replace(target)
-                with self.db:
-                    self.db.execute(
-                        """UPDATE uploads SET status='archived', sha256=?, archive_path=?,
-                           collected_at=COALESCE(collected_at,?), last_error=NULL WHERE id=?""",
-                        (digest, relative, self.clock(), record_id),
-                    )
-                log.info("已收集上传记录 %s (%s bytes)", record_id, row["size"])
-                collected = True
-            except InvalidPackage as exc:
-                self._failed(record_id, "invalid", str(exc))
-            except (OSError, sqlite3.Error) as exc:
-                # Environment failures do not exhaust a file's retry budget.
-                with self.db:
-                    self.db.execute(
-                        "UPDATE uploads SET status='queued', attempts=?, last_error=? WHERE id=?",
-                        (row["attempts"], type(exc).__name__, record_id),
-                    )
-                raise
-            except Exception as exc:
-                # Do not persist temporary URLs or tokens from HTTP exception messages.
-                error = type(exc).__name__
-                if isinstance(exc, httpx.HTTPStatusError):
-                    error += f" HTTP {exc.response.status_code}"
-                self._failed(record_id, "failed", error)
-            finally:
-                part.unlink(missing_ok=True)
-            if collected and row["collected_at"] is None:
-                # A notice failure must not turn an archived file into a failed download.
+    async def process_once(self, *, live_only: bool = False) -> bool:
+        if not self.can_work():
+            return False
+        if (
+            sum(phase == "download" for phase in self.active.values())
+            >= self.settings.download_concurrency
+        ):
+            return False
+        rows = self.db.execute(
+            """SELECT * FROM uploads WHERE group_id=? AND
+               (status='queued' OR (status='failed' AND attempts<3 AND next_attempt_at<=?))
+               ORDER BY id""",
+            (self.settings.group_id, self.clock()),
+        ).fetchall()
+        eligible = [
+            row
+            for row in rows
+            if row["id"] not in self.active and (not live_only or row["id"] in self.live_records)
+        ]
+        if not eligible:
+            return False
+        row = min(eligible, key=lambda item: (item["id"] not in self.live_records, item["id"]))
+        record_id = row["id"]
+        # Claim before the first await; all database operations stay on this event loop.
+        self.active[record_id] = "download"
+        try:
+            await self._collect(row)
+            return True
+        finally:
+            self.active.pop(record_id, None)
+            current = self.record(record_id)
+            if current["status"] in ("archived", "invalid") or current["attempts"] >= 3:
+                self.live_records.discard(record_id)
+
+    async def _collect(self, row: sqlite3.Row) -> None:
+        assert self.api is not None and self.http is not None
+        record_id = row["id"]
+        previous_attempts = row["attempts"]
+        incoming = self.settings.data_dir / "incoming"
+        incoming.mkdir(exist_ok=True)
+        part = incoming / f"{record_id}.part"
+        with self.db:
+            self.db.execute(
+                "UPDATE uploads SET status='queued', attempts=attempts+1 WHERE id=?",
+                (record_id,),
+            )
+        collected = False
+        try:
+            url = await self.api.file_url(row["file_id"], row["busid"])
+            digest = await download(
+                self.http,
+                url,
+                part,
+                row["size"],
+                self.settings.max_file_mib * 1024**2,
+                label=f"上传记录 {record_id} 下载归档",
+            )
+            checked_at = time.perf_counter()
+            log.info("上传记录 %s 开始 ZIP 检查", record_id)
+            await file_check(partial(check_zip, part))
+            log.info(
+                "上传记录 %s ZIP 检查通过，耗时 %.1f 秒",
+                record_id,
+                time.perf_counter() - checked_at,
+            )
+            if row["time_source"] == "observed":
+                # The chat event may have arrived while the ZIP was downloading.
                 try:
-                    sent = await self.api.send_receipt(
-                        row["file_id"],
-                        row["busid"],
-                        messages.receipt(row["name"], row["uploader_id"], row["nickname"]),
-                    )
-                    if not sent:
-                        log.info(
-                            "上传记录 %s 已归档，跳过回执（历史补扫或缺少唯一的当前文件消息）",
-                            record_id,
-                        )
+                    uploads = await self.api.list_uploads()
                 except Exception as exc:
                     log.warning(
-                        "上传记录 %s 的收包回复发送失败 (%s)", record_id, type(exc).__name__
+                        "上传记录 %s 时间补正失败 (%s)，保留发现日期",
+                        record_id,
+                        type(exc).__name__,
                     )
-            await self._cleanup(record_id)
-            return True
+                else:
+                    for upload in uploads:
+                        if (upload.file_id, upload.busid) == (row["file_id"], row["busid"]):
+                            self.register(upload)
+                            break
+            # The scanner can update dates and nicknames while downloads run.
+            row = self.record(record_id)
+            day = datetime.fromtimestamp(row["uploaded_at"], SHANGHAI).date()
+            relative = f"archive/{day}/{row['uploader_id']}/{record_id}.zip"
+            target = self.settings.data_dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            part.replace(target)
+            with self.db:
+                self.db.execute(
+                    """UPDATE uploads SET status='archived', sha256=?, archive_path=?,
+                       collected_at=COALESCE(collected_at,?), last_error=NULL WHERE id=?""",
+                    (digest, relative, self.clock(), record_id),
+                )
+            log.info("已收集上传记录 %s (%s bytes)", record_id, row["size"])
+            collected = True
+        except InvalidPackage as exc:
+            self._failed(record_id, "invalid", str(exc))
+        except asyncio.CancelledError:
+            with self.db:
+                self.db.execute(
+                    "UPDATE uploads SET status='queued', attempts=? WHERE id=?",
+                    (previous_attempts, record_id),
+                )
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            # Environment failures do not exhaust a file's retry budget.
+            with self.db:
+                self.db.execute(
+                    "UPDATE uploads SET status='queued', attempts=?, last_error=? WHERE id=?",
+                    (previous_attempts, type(exc).__name__, record_id),
+                )
+            raise
+        except Exception as exc:
+            # Do not persist temporary URLs or tokens from HTTP exception messages.
+            error = type(exc).__name__
+            if isinstance(exc, httpx.HTTPStatusError):
+                error += f" HTTP {exc.response.status_code}"
+            self._failed(record_id, "failed", error)
+        finally:
+            part.unlink(missing_ok=True)
+        if collected and row["collected_at"] is None:
+            # A notice failure must not turn an archived file into a failed download.
+            try:
+                sent = await self.api.send_receipt(
+                    row["file_id"],
+                    row["busid"],
+                    messages.receipt(row["name"], row["uploader_id"], row["nickname"]),
+                )
+                if not sent:
+                    log.info(
+                        "上传记录 %s 已归档，跳过回执（历史补扫或缺少唯一的当前文件消息）",
+                        record_id,
+                    )
+            except Exception as exc:
+                log.warning("上传记录 %s 的收包回复发送失败 (%s)", record_id, type(exc).__name__)
 
     def _failed(self, record_id: int, status: str, error: str) -> None:
         with self.db:
@@ -380,41 +417,47 @@ class Collector:
         log.warning("上传记录 %s: %s (%s)", record_id, status, error)
 
     async def cleanup(self) -> None:
-        async with self.lock:
+        async with self.cleanup_lock:
             await self._cleanup()
 
     async def retry(self, record_id: int) -> None:
-        async with self.lock:
-            row = self.record(record_id)
-            if row["group_id"] != self.settings.group_id or row["deleted_at"] is not None:
-                raise ValueError("只能重试当前群尚未清理源文件的记录")
-            with self.db:
-                self.db.execute(
-                    """UPDATE uploads SET status='queued', attempts=0, next_attempt_at=0,
-                       last_error=NULL, delete_error=NULL WHERE id=?""",
-                    (record_id,),
-                )
+        if record_id in self.active:
+            raise ValueError("这条记录正在下载或清理，请完成后再重试")
+        row = self.record(record_id)
+        if row["group_id"] != self.settings.group_id or row["deleted_at"] is not None:
+            raise ValueError("只能重试当前群尚未清理源文件的记录")
+        with self.db:
+            self.db.execute(
+                """UPDATE uploads SET status='queued', attempts=0, next_attempt_at=0,
+                   last_error=NULL, delete_error=NULL WHERE id=?""",
+                (record_id,),
+            )
 
-    async def _cleanup(self, record_id: int | None = None) -> None:
+    async def _cleanup(self) -> None:
         if not self.settings.auto_delete or not self.can_work():
             return
         assert self.api is not None
         rows = self.db.execute(
             """SELECT * FROM uploads WHERE group_id=? AND status='archived'
-               AND deleted_at IS NULL AND collected_at<=? AND (? IS NULL OR id=?)""",
+               AND deleted_at IS NULL AND collected_at<=? ORDER BY id""",
             (
                 self.settings.group_id,
                 self.clock() - self.settings.delete_grace_hours * 3600,
-                record_id,
-                record_id,
             ),
         ).fetchall()
-        for row in rows:
+        for candidate in rows:
+            record_id = candidate["id"]
+            if record_id in self.active:
+                continue
+            row = self.record(record_id)
+            if row["status"] != "archived" or row["deleted_at"] is not None:
+                continue
+            self.active[record_id] = "cleanup"
             try:
                 path = self.settings.data_dir / row["archive_path"]
                 checked_at = time.perf_counter()
                 log.info("上传记录 %s 开始删源前本地归档校验", row["id"])
-                if not await asyncio.to_thread(file_matches, path, row["size"], row["sha256"]):
+                if not await file_check(partial(file_matches, path, row["size"], row["sha256"])):
                     raise ValueError("本地文件不存在或大小/哈希不符，请重试此上传记录")
                 log.info(
                     "上传记录 %s 本地归档校验通过，耗时 %.1f 秒",
@@ -441,3 +484,5 @@ class Collector:
                         "UPDATE uploads SET delete_error=? WHERE id=?", (error, row["id"])
                     )
                 log.warning("上传记录 %s 未清理: %s", row["id"], error)
+            finally:
+                self.active.pop(record_id, None)

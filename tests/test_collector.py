@@ -140,6 +140,9 @@ async def test_collects_zip_before_removing_group_source(tmp_path: Path) -> None
         record = collector.record(record_id)
         assert record["status"] == "archived"
         assert (tmp_path / record["archive_path"]).read_bytes() == body
+        assert group.files == {"file-a"}  # Collection completes before the cleanup worker runs.
+        await collector.cleanup()
+        record = collector.record(record_id)
         assert group.files == set()
         assert record["deleted_at"] is not None
         assert len(group.messages) == 1
@@ -200,6 +203,7 @@ async def test_reply_failure_does_not_undo_collection_or_prevent_cleanup(
             )
             assert record_id is not None
             await collector.process_once()
+            await collector.cleanup()
             record = collector.record(record_id)
             assert record["status"] == "archived"
             assert record["attempts"] == 1
@@ -234,6 +238,7 @@ async def test_corrupt_archive_keeps_source_and_manual_retry_repairs_it(tmp_path
         assert collector.record(record_id)["delete_error"]
         await collector.retry(record_id)
         await collector.process_once()
+        await collector.cleanup()
         assert path.read_bytes() == body
         assert group.files == set()
         collector.close()

@@ -116,13 +116,18 @@ class NapCat:
         for upload in all_uploads:
             if counts[upload.file_id] != 1:
                 continue
+            source = self._matching_message(upload, all_uploads)
+            live = (
+                source is not None
+                and not source.used
+                and (upload.uploaded_at <= 0 or upload.uploaded_at >= self.receipts_since)
+            )
             if upload.uploaded_at <= 0:
                 missing_times += 1
-                source = self._matching_message(upload, all_uploads)
                 if source is not None:
                     # Keep the raw observation key: inferred dates must not change identity.
                     upload = replace(upload, uploaded_at=float(source.time), time_source="message")
-            uploads.append(upload)
+            uploads.append(replace(upload, live=live))
         if missing_times:
             log.warning(
                 "%s 个群文件没有有效上传时间，按文件消息时间或首次发现时间登记", missing_times

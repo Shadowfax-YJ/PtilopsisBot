@@ -15,6 +15,7 @@ class Settings(BaseModel):
     delete_grace_hours: float = Field(default=24, ge=0, allow_inf_nan=False)
     max_file_mib: int = Field(default=256, gt=0)
     min_free_gib: float = Field(default=2, ge=0, allow_inf_nan=False)
+    download_concurrency: int = Field(default=3, ge=1, le=6)
 
 
 def load_settings(path: Path) -> Settings:

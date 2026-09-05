@@ -1,19 +1,35 @@
+import asyncio
 import hashlib
 import logging
 import zlib
-from contextlib import nullcontext
+from collections.abc import Callable
+from contextlib import nullcontext, suppress
 from pathlib import Path
 from time import perf_counter
+from typing import TypeVar
 from zipfile import BadZipFile, ZipFile
 
 import httpx
 
 CHUNK = 256 * 1024
 log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class InvalidPackage(ValueError):
     pass
+
+
+async def file_check(operation: Callable[[], T]) -> T:
+    task = asyncio.create_task(asyncio.to_thread(operation))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # A thread keeps its Windows file handle after task cancellation. Let it
+        # finish before the caller removes the .part file or releases its claim.
+        with suppress(Exception):
+            await task
+        raise
 
 
 async def download(

@@ -117,6 +117,7 @@ async def test_message_arriving_during_download_corrects_date_before_archive_and
             record_id = collector.register((await api.list_uploads())[0])
             assert record_id is not None
             await collector.process_once()
+            await collector.cleanup()
             record = collector.record(record_id)
             assert record["time_source"] == "message"
             assert record["uploaded_at"] == 1788623999
@@ -280,13 +281,14 @@ class FilesRPC:
             return {"message_id": 1}
         if api == "get_group_root_files":
             self.generation += 1
-            self.handles = {
+            current_handles = {
                 f"temporary-{self.generation}-{source}": source for source in self.files
             }
+            self.handles.update(current_handles)
             return {
                 "files": [
                     {**self.files[source], "file_id": handle}
-                    for handle, source in self.handles.items()
+                    for handle, source in current_handles.items()
                 ],
                 "folders": [],
             }

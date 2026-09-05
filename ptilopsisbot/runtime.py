@@ -2,7 +2,9 @@ import asyncio
 import contextlib
 import logging
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
+from functools import partial
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
@@ -52,23 +54,59 @@ def run(settings: Settings) -> None:
     http = httpx.AsyncClient(
         timeout=httpx.Timeout(60, connect=15),
         follow_redirects=True,
-        limits=httpx.Limits(max_connections=2),
+        limits=httpx.Limits(max_connections=settings.download_concurrency + 1),
         trust_env=False,
     )
     api = NapCat(settings.group_id, http)
     collector = Collector(settings, api=api, http=http)
-    wake = asyncio.Event()
-    scan_requested = asyncio.Event()
+    download_wake = asyncio.Event()
+    scan_wake = asyncio.Event()
+    cleanup_wake = asyncio.Event()
+    scan_pending = False
+    cleanup_pending = False
     scheduler = AsyncIOScheduler(timezone=SHANGHAI)
-    worker: asyncio.Task[None] | None = None
+    workers: list[asyncio.Task[None]] = []
 
-    async def scan() -> int:
-        uploads = await api.list_uploads()
-        count = sum(collector.register(upload) is not None for upload in uploads)
-        wake.set()
-        await collector.cleanup()
+    def request_cleanup() -> None:
+        nonlocal cleanup_pending
+        cleanup_pending = True
+        cleanup_wake.set()
+
+    async def scan() -> bool:
+        nonlocal scan_pending
+        if not scan_pending or not await api.refresh_status():
+            return False
+        scan_pending = False
+        try:
+            uploads = await api.list_uploads()
+            count = sum(collector.register(upload) is not None for upload in uploads)
+        except Exception:
+            scan_pending = True
+            raise
+        download_wake.set()
+        request_cleanup()
         log.info("根目录补扫结束，发现 %s 个符合条件的包", count)
-        return count
+        return False
+
+    async def download_one(*, live_only: bool) -> bool:
+        if not await api.refresh_status():
+            return False
+        processed = await collector.process_once(live_only=live_only)
+        if processed:
+            request_cleanup()
+        return processed
+
+    async def cleanup() -> bool:
+        nonlocal cleanup_pending
+        if not cleanup_pending or not await api.refresh_status():
+            return False
+        cleanup_pending = False
+        try:
+            await collector.cleanup()
+        except Exception:
+            cleanup_pending = True
+            raise
+        return False
 
     async def daily_report() -> None:
         day = datetime.now(SHANGHAI).date() - timedelta(days=1)
@@ -78,22 +116,20 @@ def run(settings: Settings) -> None:
             log.warning("日报 %s 发送失败 (%s)，可使用 report 命令补发", day, type(exc).__name__)
 
     async def scheduled_scan() -> None:
-        scan_requested.set()
-        wake.set()
+        nonlocal scan_pending
+        scan_pending = True
+        scan_wake.set()
 
-    async def work() -> None:
+    async def worker_loop(
+        operation: Callable[[], Awaitable[bool]],
+        wake: asyncio.Event,
+        label: str,
+    ) -> None:
         last_error = ""
         while True:
             wake.clear()
             try:
-                if await api.refresh_status() and scan_requested.is_set():
-                    scan_requested.clear()
-                    try:
-                        await scan()
-                    except Exception:
-                        scan_requested.set()
-                        raise
-                if await collector.process_once():
+                if await operation():
                     last_error = ""
                     continue
                 last_error = ""
@@ -104,32 +140,45 @@ def run(settings: Settings) -> None:
                     else type(exc).__name__
                 )
                 if error != last_error:
-                    log.error("处理暂停，5 秒后检查环境: %s", error)
+                    log.error("%s 暂停，5 秒后检查环境: %s", label, error)
                 last_error = error
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(wake.wait(), timeout=5)
 
     @driver.on_startup
     async def start() -> None:
-        nonlocal worker
         collector.repair_dates()
-        worker = asyncio.create_task(work())
+        workers.append(asyncio.create_task(worker_loop(scan, scan_wake, "补扫")))
+        workers.append(asyncio.create_task(worker_loop(cleanup, cleanup_wake, "清理")))
+        for index in range(settings.download_concurrency):
+            live_only = index == 0 and settings.download_concurrency > 1
+            workers.append(
+                asyncio.create_task(
+                    worker_loop(
+                        partial(download_one, live_only=live_only),
+                        download_wake,
+                        "新包下载" if live_only else f"下载 {index + 1}",
+                    )
+                )
+            )
         scheduler.add_job(scheduled_scan, "interval", minutes=30, max_instances=1, coalesce=True)
         scheduler.add_job(daily_report, "cron", hour=0, minute=5, max_instances=1, coalesce=True)
         scheduler.start()
         log.info(
-            "目标群 %s，自动清理=%s，宽限期=%s 小时，等待 NapCat 连接",
+            "目标群 %s，自动清理=%s，宽限期=%s 小时，下载并发=%s"
+            "（多名额时保留 1 个给新包），等待 NapCat 连接",
             settings.group_id,
             settings.auto_delete,
             settings.delete_grace_hours,
+            settings.download_concurrency,
         )
 
     @driver.on_shutdown
     async def stop() -> None:
         scheduler.shutdown(wait=False)
-        if worker is not None:
+        for worker in workers:
             worker.cancel()
-            await asyncio.gather(worker, return_exceptions=True)
+        await asyncio.gather(*workers, return_exceptions=True)
         await http.aclose()
         collector.close()
 
@@ -140,8 +189,9 @@ def run(settings: Settings) -> None:
             return
         api.bot = bot
         api.reset_receipts()
+        collector.reset_priority()
         await api.refresh_status()
-        wake.set()
+        download_wake.set()
         await scheduled_scan()
 
     @driver.on_bot_disconnect
@@ -150,6 +200,7 @@ def run(settings: Settings) -> None:
             api.bot = None
             api.account_online = False
             api.reset_receipts()
+            collector.reset_priority()
             log.warning("NapCat 已断开，暂停采集和清理")
 
     notice = nonebot.on_notice(priority=10, block=False)
@@ -187,6 +238,13 @@ def run(settings: Settings) -> None:
             "group_id": settings.group_id,
             "auto_delete": settings.auto_delete,
             "total": len(records),
+            "download_concurrency": settings.download_concurrency,
+            "active_downloads": sorted(
+                key for key, phase in collector.active.items() if phase == "download"
+            ),
+            "active_cleanup": sorted(
+                key for key, phase in collector.active.items() if phase == "cleanup"
+            ),
             "records": [dict(row) for row in records[-50:]],
         }
 
@@ -201,7 +259,7 @@ def run(settings: Settings) -> None:
             await collector.retry(record_id)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        wake.set()
+        download_wake.set()
         return {"status": "queued"}
 
     @app.post("/ptilopsisbot/report/{day}", dependencies=auth)

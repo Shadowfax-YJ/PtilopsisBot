@@ -23,14 +23,15 @@ def free_port() -> int:
 
 
 @pytest.mark.parametrize(
-    ("live", "missing_time"),
-    [(True, False), (False, False), (True, True)],
-    ids=["live-quoted", "backfill-silent", "live-quoted-zero-time"],
+    ("live", "missing_time", "backlog"),
+    [(True, False, False), (False, False, False), (True, True, False), (True, True, True)],
+    ids=["live-quoted", "backfill-silent", "live-quoted-zero-time", "live-during-backlog"],
 )
 async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
     tmp_path: Path,
     live: bool,
     missing_time: bool,
+    backlog: bool,
 ) -> None:
     package = tmp_path / "sample.zip"
     with ZipFile(package, "w") as archive:
@@ -38,8 +39,12 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
             for _ in range(100):
                 data.write(b"a" * 1024**2)
 
+    release_history = threading.Event()
+
     class DownloadHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            if self.path.startswith("/old-"):
+                release_history.wait(30)
             self.send_response(200)
             self.send_header("Content-Length", str(package.stat().st_size))
             self.end_headers()
@@ -62,6 +67,12 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
     )
     headers = {"Authorization": "Bearer test-only-token"}
     group_files: set[str] = set() if live else {"file-a"}
+    if backlog:
+        group_files.update({"old-a", "old-b", "old-c"})
+    names = {
+        key: f"run-20260905-120000-{number:06d}.zip"
+        for number, key in enumerate(("file-a", "old-a", "old-b", "old-c"), start=1)
+    }
     uploaded_at = 1788580800
     handles: dict[str, str] = {}
     scan_seen = asyncio.Event()
@@ -106,33 +117,39 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                                 data = {"online": True, "good": True}
                             elif action == "get_group_root_files":
                                 generation += 1
-                                handles.clear()
-                                handles.update(
-                                    {
-                                        f"list-{generation}-{source}": source
-                                        for source in group_files
-                                    }
-                                )
+                                current_handles = {
+                                    f"list-{generation}-{source}": source
+                                    for source in sorted(group_files)
+                                }
+                                # NapCat caches each handle until expiry/restart; another
+                                # concurrent listing doesn't invalidate an in-flight handle.
+                                handles.update(current_handles)
                                 scan_seen.set()
                                 data = {
                                     "files": [
                                         {
-                                            "file_id": next(iter(handles)),
-                                            "file_name": "run-20260905-120000-000001.zip",
+                                            "file_id": handle,
+                                            "file_name": names[source],
                                             "file_size": package.stat().st_size,
                                             "busid": 102,
                                             "uploader": 456,
                                             "uploader_name": "测试成员",
-                                            "upload_time": 0 if missing_time else uploaded_at,
+                                            "upload_time": 0
+                                            if missing_time
+                                            else (
+                                                uploaded_at if source == "file-a" else 1788580800
+                                            ),
                                         }
-                                    ]
-                                    if group_files
-                                    else [],
+                                        for handle, source in current_handles.items()
+                                    ],
                                     "folders": [],
                                 }
                             elif action == "get_group_file_url":
                                 assert request["params"]["file_id"] in handles
-                                data = {"url": f"http://127.0.0.1:{server.server_port}/run.zip"}
+                                source = handles[request["params"]["file_id"]]
+                                data = {
+                                    "url": f"http://127.0.0.1:{server.server_port}/{source}.zip"
+                                }
                             elif action == "delete_group_file":
                                 group_files.remove(handles[request["params"]["file_id"]])
                                 data = {"result": 0, "errMsg": ""}
@@ -167,6 +184,18 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                     responder = asyncio.create_task(respond())
                     try:
                         await asyncio.wait_for(scan_seen.wait(), timeout=5)
+                        if backlog:
+                            for _ in range(100):
+                                state = (
+                                    await http.get("/ptilopsisbot/status", headers=headers)
+                                ).json()
+                                if len(state["active_downloads"]) == 2:
+                                    break
+                                await asyncio.sleep(0.1)
+                            else:
+                                raise AssertionError(log_path.read_text(encoding="utf-8"))
+                            assert state["download_concurrency"] == 3
+                            assert len(state["records"]) == 3
                         if live:
                             uploaded_at = int(time.time())
                         group_files.add("file-a")
@@ -213,24 +242,49 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                         await websocket.send(json.dumps(file_message))
                         for _ in range(200):
                             state = (await http.get("/ptilopsisbot/status", headers=headers)).json()
-                            if state["records"] and state["records"][0]["deleted_at"]:
+                            target = next(
+                                (row for row in state["records"] if row["name"] == names["file-a"]),
+                                None,
+                            )
+                            if target and target["deleted_at"]:
                                 break
                             if responder.done():
                                 await responder
                             await asyncio.sleep(0.1)
                         else:
                             raise AssertionError(log_path.read_text(encoding="utf-8"))
-                        assert group_files == set()
-                        assert len(state["records"]) == 1
-                        assert "1970-01-01" not in state["records"][0]["archive_path"]
+                        assert target is not None
+                        assert group_files == ({"old-a", "old-b", "old-c"} if backlog else set())
+                        assert len(state["records"]) == (4 if backlog else 1)
+                        assert "1970-01-01" not in target["archive_path"]
                         assert len(reports) == int(live)
                         assert replies == (["-42"] if live else [])
                         if live:
                             assert "run-20260905-120000-000001.zip" in reports[0]
-                        saved = tmp_path / "data" / state["records"][0]["archive_path"]
+                        saved = tmp_path / "data" / target["archive_path"]
                         assert saved.stat().st_size == package.stat().st_size
                         with ZipFile(saved) as archive:
                             assert archive.testzip() is None
+                        if backlog:
+                            assert len(state["active_downloads"]) == 2
+                            pending = next(
+                                row for row in state["records"] if row["name"] == names["old-c"]
+                            )
+                            assert pending["attempts"] == 0
+                            release_history.set()
+                            for _ in range(200):
+                                state = (
+                                    await http.get("/ptilopsisbot/status", headers=headers)
+                                ).json()
+                                if all(row["deleted_at"] for row in state["records"]):
+                                    break
+                                if responder.done():
+                                    await responder
+                                await asyncio.sleep(0.1)
+                            else:
+                                raise AssertionError(log_path.read_text(encoding="utf-8"))
+                            assert not group_files
+                            assert len(reports) == 1  # History stays silent after draining.
                         day = datetime.fromtimestamp(uploaded_at, ZoneInfo("Asia/Shanghai")).date()
                         response = await http.post(f"/ptilopsisbot/report/{day}", headers=headers)
                         assert response.status_code == 200
@@ -249,6 +303,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                         responder.cancel()
                         await asyncio.gather(responder, return_exceptions=True)
         finally:
+            release_history.set()
             process.terminate()
             process.wait(timeout=10)
             server.shutdown()
