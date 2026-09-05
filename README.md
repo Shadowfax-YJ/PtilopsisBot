@@ -21,7 +21,7 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 
 首次配置时，把生成的随机值填进 `config.toml` 的 `access_token`。已有配置保留原值即可。配置和数据目录不会提交到 Git：换电脑需单独带上 `config.toml`；已经收集过数据时先停止旧进程，再完整复制 `data` 目录。新电脑重新建立 `.venv`，不要复制旧虚拟环境；数据目录换位置时同步修改配置里的 `data_dir`。
 
-1. Windows x64 使用 [NapCat 官方发布页](https://github.com/NapNeko/NapCatQQ/releases)中的 `NapCat.Shell.Windows.Node.zip`，完整解压到独立目录（例如 `D:\Bots\NapCat`），双击该目录下的 `napcat.bat`。这个包自带所需 QQ 运行文件和 Node.js，无需另行安装它们。已核对的版本为 [v4.18.19](https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.19/NapCat.Shell.Windows.Node.zip)，其[官方打包流程](https://github.com/NapNeko/NapCatQQ/blob/v4.18.19/.github/workflows/release-publish.yml)包含上述运行文件。
+1. Windows x64 使用 [NapCat 官方发布页](https://github.com/NapNeko/NapCatQQ/releases)中的 `NapCat.Shell.Windows.Node.zip`，完整解压到独立目录（例如 `D:\Bots\NapCat`）。[v4.18.19](https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.19/NapCat.Shell.Windows.Node.zip) 自带 Node.js 和大部分 QQ 运行文件，但有启动参数错误及缺少 DLL 的问题，需先完成下文的启动修复，再运行 `napcat-fixed.bat`。
 2. 打开 NapCat 启动日志给出的 WebUI 地址（默认端口 6099），使用日志里的随机 Token 登录，按界面提示修改 WebUI 密码、扫码登录 QQ。账号需要加入群 **1095012141**；删除其他成员的群文件需要群管理权限。NapCat 无需申请启动授权，WebUI 密码在本机生成。见 [官方配置说明](https://napneko.github.io/config/basic)。
 3. 在 NapCat 的网络配置中新建并启用 **WebSocket 客户端 / 反向 WebSocket**：URL 为 `ws://127.0.0.1:8080/onebot/v11/`，消息格式选 `array`，Token 填 `config.toml` 中 `access_token` 引号内的值。这个连接密钥与 WebUI 登录密码用途不同。只需这个 OneBot 11 连接，无需另开 HTTP API。
 4. 运行机器人：
@@ -33,6 +33,19 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 修改配置后重启。默认 `auto_delete=true`，每个包保存成功满 24 小时后可清理；将 `delete_grace_hours` 改为 `0` 可在保存和检查通过后立即释放群空间。启动补扫会收集根目录里已有的符合条件的包。
 
 如果之前下载了 `NapCat.Shell.Windows.OneKey.zip`，运行安装器时出现“下载QQ失败 / HTTP 404”，关闭安装器并按第 1 步换用 Node 包。2026-09-05 核对时，一键包内置的 QQ 下载地址返回 404；这是上游已有的[安装器问题](https://github.com/NapNeko/NapCatQQ/issues/1973)，此时尚未进入 PtilopsisBot 的连接配置阶段。
+
+**v4.18.19 Node 包启动修复：**该版本给 Node 工作进程传入 `--no-sandbox`，导致退出码 9，见[上游问题](https://github.com/NapNeko/NapCatQQ/issues/2040)。在 NapCat 目录中新建 `napcat-fixed.bat`，写入：
+
+```bat
+@echo off
+setlocal
+cd /d "%~dp0"
+set "NAPCAT_DISABLE_MULTI_PROCESS=1"
+"%~dp0node.exe" "%~dp0index.js"
+pause
+```
+
+本次下载的 Node 包内置 QQ `9.9.32-50969`，还缺少 `crypto.dll` 和 `ssl.dll`，会使 `wrapper.node` 加载失败。用 7-Zip 解压[腾讯同版本 QQ 安装包](https://qqdl.gtimg.cn/qqfile/QQNT/9.9.32/beta/a33ab721/QQ9.9.32.50969_x64.exe)，将其中与 `wrapper.node` 同目录的这两个 DLL 复制到 NapCat 的 `node.exe` 所在目录；使用其他内置 QQ 版本时不要混用这些 DLL。补齐后运行 `napcat-fixed.bat`。此方案已在本机验证 WebUI 正常响应并生成登录二维码。单进程模式下需要重启时，关闭窗口后重新运行该脚本。
 
 另开终端运行下方 `status` 命令，看到 `"online": true` 后上传真实游戏 ZIP 进行验收。正常运行只启动一份小助手。
 
