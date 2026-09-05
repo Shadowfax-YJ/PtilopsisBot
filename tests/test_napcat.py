@@ -85,6 +85,51 @@ async def test_zero_time_live_upload_uses_message_date_without_changing_identity
             collector.close()
 
 
+async def test_message_arriving_during_download_corrects_date_before_archive_and_delete(
+    tmp_path: Path,
+) -> None:
+    stream = io.BytesIO()
+    with ZipFile(stream, "w") as archive:
+        archive.writestr("run.json", "{}")
+    body = stream.getvalue()
+    rpc = FilesRPC(len(body))
+    rpc.files["source-a"]["upload_time"] = 0
+    now = [1788623940.0]  # Connected at 2026-09-05 23:59:00 Shanghai.
+    event = file_message(time=1788623999)
+    event.message[0].data["file_size"] = str(len(body))
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        api.remember_file_message(event)  # Chat event arrives after the first scan.
+        return httpx.Response(200, content=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as http:
+        api = NapCat(123, http, clock=lambda: now[0])
+        api.bot = rpc
+        await api.refresh_status()
+        now[0] = 1788624001  # First root scan is just after midnight.
+        collector = Collector(
+            Settings(group_id=123, data_dir=tmp_path, delete_grace_hours=0, min_free_gib=0),
+            api=api,
+            http=http,
+            clock=lambda: now[0],
+        )
+        try:
+            record_id = collector.register((await api.list_uploads())[0])
+            assert record_id is not None
+            await collector.process_once()
+            record = collector.record(record_id)
+            assert record["time_source"] == "message"
+            assert record["uploaded_at"] == 1788623999
+            assert record["archive_path"] == "archive/2026-09-05/456/1.zip"
+            assert record["deleted_at"] is not None
+            assert "上传 1，新增唯一包 1" in collector.report(date(2026, 9, 5))
+            assert "当日未发现已登记的对局包" in collector.report(date(2026, 9, 6))
+            assert rpc.messages[0][0].data == {"id": "-42"}
+            assert not rpc.files
+        finally:
+            collector.close()
+
+
 def file_message(message_id: int = -42, **changes: Any) -> GroupMessageEvent:
     return GroupMessageEvent.model_validate(
         {

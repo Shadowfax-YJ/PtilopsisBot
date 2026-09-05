@@ -96,6 +96,9 @@ class FakeGroup:
     async def file_url(self, file_id: str, busid: int) -> str:
         return "https://files.test/run.zip"
 
+    async def list_uploads(self) -> list[Upload]:
+        return []
+
     async def delete_file(self, file_id: str, busid: int, *, expected_hash: str) -> None:
         if self.delete_error:
             raise self.delete_error

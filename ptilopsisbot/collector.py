@@ -30,6 +30,8 @@ class GroupAPI(Protocol):
 
     async def file_url(self, file_id: str, busid: int) -> str: ...
 
+    async def list_uploads(self) -> list["Upload"]: ...
+
     async def delete_file(self, file_id: str, busid: int, *, expected_hash: str) -> None: ...
 
     async def send_message(self, text: str) -> None: ...
@@ -302,6 +304,22 @@ class Collector:
                     record_id,
                     time.perf_counter() - checked_at,
                 )
+                if row["time_source"] == "observed":
+                    # The chat event may have arrived while the ZIP was downloading.
+                    try:
+                        uploads = await self.api.list_uploads()
+                    except Exception as exc:
+                        log.warning(
+                            "上传记录 %s 时间补正失败 (%s)，保留发现日期",
+                            record_id,
+                            type(exc).__name__,
+                        )
+                    else:
+                        for upload in uploads:
+                            if (upload.file_id, upload.busid) == (row["file_id"], row["busid"]):
+                                self.register(upload)
+                                row = self.record(record_id)
+                                break
                 day = datetime.fromtimestamp(row["uploaded_at"], SHANGHAI).date()
                 relative = f"archive/{day}/{row['uploader_id']}/{record_id}.zip"
                 target = self.settings.data_dir / relative
