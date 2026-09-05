@@ -15,7 +15,7 @@ from nonebot.drivers.fastapi import Driver
 
 from .collector import SHANGHAI, Collector
 from .config import Settings
-from .llbot import LLBot, upload_from_notice
+from .napcat import NapCat
 
 log = logging.getLogger(__name__)
 
@@ -49,15 +49,16 @@ def run(settings: Settings) -> None:
     assert isinstance(driver, Driver)
     driver.register_adapter(Adapter)
     app = driver.server_app
-    api = LLBot(settings.group_id)
     http = httpx.AsyncClient(
         timeout=httpx.Timeout(60, connect=15),
         follow_redirects=True,
         limits=httpx.Limits(max_connections=2),
         trust_env=False,
     )
+    api = NapCat(settings.group_id, http)
     collector = Collector(settings, api=api, http=http)
     wake = asyncio.Event()
+    scan_requested = asyncio.Event()
     scheduler = AsyncIOScheduler(timezone=SHANGHAI)
     worker: asyncio.Task[None] | None = None
 
@@ -77,19 +78,21 @@ def run(settings: Settings) -> None:
             log.warning("日报 %s 发送失败 (%s)，可使用 report 命令补发", day, type(exc).__name__)
 
     async def scheduled_scan() -> None:
-        if not api.online:
-            return
-        try:
-            await scan()
-        except Exception as exc:
-            log.warning("补扫失败: %s", type(exc).__name__)
+        scan_requested.set()
+        wake.set()
 
     async def work() -> None:
         last_error = ""
         while True:
             wake.clear()
             try:
-                await api.refresh_status()
+                if await api.refresh_status() and scan_requested.is_set():
+                    scan_requested.clear()
+                    try:
+                        await scan()
+                    except Exception:
+                        scan_requested.set()
+                        raise
                 if await collector.process_once():
                     last_error = ""
                     continue
@@ -114,7 +117,7 @@ def run(settings: Settings) -> None:
         scheduler.add_job(daily_report, "cron", hour=0, minute=5, max_instances=1, coalesce=True)
         scheduler.start()
         log.info(
-            "目标群 %s，自动清理=%s，宽限期=%s 小时，等待 LLBot 连接",
+            "目标群 %s，自动清理=%s，宽限期=%s 小时，等待 NapCat 连接",
             settings.group_id,
             settings.auto_delete,
             settings.delete_grace_hours,
@@ -144,7 +147,7 @@ def run(settings: Settings) -> None:
         if api.bot is bot:
             api.bot = None
             api.account_online = False
-            log.warning("LLBot 已断开，暂停采集和清理")
+            log.warning("NapCat 已断开，暂停采集和清理")
 
     notice = nonebot.on_notice(priority=10, block=False)
 
@@ -152,10 +155,8 @@ def run(settings: Settings) -> None:
     async def receive(bot: Bot, event: GroupUploadNoticeEvent) -> None:
         if api.bot is not bot or event.group_id != settings.group_id:
             return
-        upload = upload_from_notice(event.model_dump())
-        if upload is not None:
-            collector.register(upload)
-            wake.set()
+        # Notice IDs are message handles, not stable group-file identities.
+        await scheduled_scan()
 
     async def authorize(authorization: str = Header(default="")) -> None:
         expected = "Bearer " + settings.access_token.get_secret_value()
@@ -176,11 +177,9 @@ def run(settings: Settings) -> None:
         }
 
     @app.post("/databot/scan", dependencies=auth)
-    async def request_scan() -> dict[str, int]:
-        try:
-            return {"found": await scan()}
-        except Exception as exc:
-            raise HTTPException(503, f"补扫失败: {type(exc).__name__}") from exc
+    async def request_scan() -> dict[str, str]:
+        await scheduled_scan()
+        return {"status": "queued"}
 
     @app.post("/databot/retry/{record_id}", dependencies=auth)
     async def request_retry(record_id: int) -> dict[str, str]:

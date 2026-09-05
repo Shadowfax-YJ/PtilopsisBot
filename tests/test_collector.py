@@ -7,7 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import httpx
 import pytest
 
-from databot.collector import Collector, SourceMissingError, Upload
+from databot.collector import Collector, Upload
 from databot.config import Settings
 
 
@@ -36,11 +36,11 @@ class FakeGroup:
     async def file_url(self, file_id: str, busid: int) -> str:
         return "https://files.test/run.zip"
 
-    async def delete_file(self, file_id: str, busid: int) -> None:
+    async def delete_file(self, file_id: str, busid: int, *, expected_hash: str) -> None:
         if self.delete_error:
             raise self.delete_error
         if file_id not in self.files:
-            raise SourceMissingError()
+            raise ValueError("源文件未找到")
         self.files.remove(file_id)
 
 
@@ -236,7 +236,7 @@ async def test_cleanup_handles_missing_source_and_environment_failures(
                 await collector.cleanup()
         else:
             await collector.cleanup()
-        assert bool(collector.record(record_id)["deleted_at"]) == (case == "missing")
+        assert collector.record(record_id)["deleted_at"] is None
         if case != "missing":
             assert group.files == {"file-a"}
             group.delete_error = None

@@ -21,7 +21,7 @@ def load_settings(path: Path) -> Settings:
     with path.open("rb") as source:
         settings = Settings.model_validate(tomllib.load(source))
     if not settings.access_token.get_secret_value().strip():
-        raise ValueError("请在配置中填写 access_token，并在 LLBot 中使用同一个值")
+        raise ValueError("请在配置中填写 access_token，并在 NapCat 的反向 WS 中使用同一个值")
     return settings.model_copy(
         update={"data_dir": (path.resolve().parent / settings.data_dir).resolve()}
     )

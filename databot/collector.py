@@ -23,17 +23,13 @@ class OfflineError(ConnectionError):
     pass
 
 
-class SourceMissingError(Exception):
-    pass
-
-
 class GroupAPI(Protocol):
     @property
     def online(self) -> bool: ...
 
     async def file_url(self, file_id: str, busid: int) -> str: ...
 
-    async def delete_file(self, file_id: str, busid: int) -> None: ...
+    async def delete_file(self, file_id: str, busid: int, *, expected_hash: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -324,10 +320,9 @@ class Collector:
                     raise ValueError("本地文件不存在或大小/哈希不符，请重试此上传记录")
                 if not self.can_work():
                     return
-                try:
-                    await self.api.delete_file(row["file_id"], row["busid"])
-                except SourceMissingError:
-                    pass
+                await self.api.delete_file(
+                    row["file_id"], row["busid"], expected_hash=row["sha256"]
+                )
                 with self.db:
                     self.db.execute(
                         "UPDATE uploads SET deleted_at=?, delete_error=NULL WHERE id=?",

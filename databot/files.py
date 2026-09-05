@@ -1,5 +1,6 @@
 import hashlib
 import zlib
+from contextlib import nullcontext
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
@@ -13,7 +14,7 @@ class InvalidPackage(ValueError):
 
 
 async def download(
-    http: httpx.AsyncClient, url: str, target: Path, expected_size: int, max_size: int
+    http: httpx.AsyncClient, url: str, target: Path | None, expected_size: int, max_size: int
 ) -> str:
     digest = hashlib.sha256()
     total = 0
@@ -24,12 +25,14 @@ async def download(
         length = response.headers.get("Content-Length")
         if length is not None and int(length) != expected_size:
             raise ValueError("Content-Length 与群文件声明大小不符")
-        with target.open("wb") as output:
+        # Cleanup hashes the remote stream again without storing a second local copy.
+        with target.open("wb") if target is not None else nullcontext() as output:
             async for chunk in response.aiter_bytes(CHUNK):
                 total += len(chunk)
                 if total > max_size or total > expected_size:
                     raise ValueError("下载超过文件大小上限")
-                output.write(chunk)
+                if output is not None:
+                    output.write(chunk)
                 digest.update(chunk)
     if total != expected_size:
         raise ValueError("下载不完整，实收大小与群文件声明不符")

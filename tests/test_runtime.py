@@ -50,7 +50,9 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
         encoding="utf-8",
     )
     headers = {"Authorization": "Bearer test-only-token"}
-    group_files = {"file-a"}
+    group_files: set[str] = set()
+    handles: dict[str, str] = {}
+    scan_seen = asyncio.Event()
     reports: list[str] = []
     log_path = tmp_path / "bot.log"
     with log_path.open("wb") as output:
@@ -79,6 +81,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                 ) as websocket:
 
                     async def respond() -> None:
+                        generation = 0
                         async for message in websocket:
                             request = json.loads(message)
                             action = request["action"]
@@ -87,10 +90,19 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                             if action == "get_status":
                                 data = {"online": True, "good": True}
                             elif action == "get_group_root_files":
+                                generation += 1
+                                handles.clear()
+                                handles.update(
+                                    {
+                                        f"list-{generation}-{source}": source
+                                        for source in group_files
+                                    }
+                                )
+                                scan_seen.set()
                                 data = {
                                     "files": [
                                         {
-                                            "file_id": "file-a",
+                                            "file_id": next(iter(handles)),
                                             "file_name": "run-20260905-120000-000001.zip",
                                             "file_size": package.stat().st_size,
                                             "busid": 102,
@@ -104,10 +116,11 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                                     "folders": [],
                                 }
                             elif action == "get_group_file_url":
+                                assert request["params"]["file_id"] in handles
                                 data = {"url": f"http://127.0.0.1:{server.server_port}/run.zip"}
                             elif action == "delete_group_file":
-                                group_files.remove(request["params"]["file_id"])
-                                data = None
+                                group_files.remove(handles[request["params"]["file_id"]])
+                                data = {"result": 0, "errMsg": ""}
                             elif action == "send_group_msg":
                                 reports.append(request["params"]["message"][0]["data"]["text"])
                                 data = {"message_id": 10}
@@ -126,15 +139,17 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
 
                     responder = asyncio.create_task(respond())
                     try:
+                        await asyncio.wait_for(scan_seen.wait(), timeout=5)
+                        group_files.add("file-a")
                         notice = {
-                            "time": 1788580800,
+                            "time": 1788580830,
                             "self_id": 999,
                             "post_type": "notice",
                             "notice_type": "group_upload",
                             "group_id": 123,
                             "user_id": 456,
                             "file": {
-                                "id": "file-a",
+                                "id": "message-handle-not-a-group-file-handle",
                                 "name": "run-20260905-120000-000001.zip",
                                 "size": package.stat().st_size,
                                 "busid": 102,
