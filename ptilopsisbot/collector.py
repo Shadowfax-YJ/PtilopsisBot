@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from . import messages
 from .config import Settings
 from .files import InvalidPackage, check_zip, download, file_matches
 
@@ -30,6 +31,8 @@ class GroupAPI(Protocol):
     async def file_url(self, file_id: str, busid: int) -> str: ...
 
     async def delete_file(self, file_id: str, busid: int, *, expected_hash: str) -> None: ...
+
+    async def send_message(self, text: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -128,7 +131,7 @@ class Collector:
             pending += row["status"] == "queued"
             invalid += row["status"] == "invalid"
             failed += row["status"] == "failed"
-        lines = [f"{day} 对局包收集"]
+        lines = []
         for user, (uploads, unique) in sorted(
             counts.items(), key=lambda item: (-item[1][1], item[0])
         ):
@@ -138,12 +141,8 @@ class Collector:
                 (self.settings.group_id, user),
             ).fetchone()
             nickname = " ".join(str(latest["nickname"]).split()) if latest else str(user)
-            lines.append(f"{nickname}（{user}）：上传 {uploads}，新增唯一包 {unique}")
-        if not rows:
-            lines.append("当天没有登记的对局包")
-        lines.append(f"待处理 {pending}，检查不通过 {invalid}，处理失败 {failed}")
-        lines.append("仅检查 ZIP 可读性，未验证游戏内容")
-        return "\n".join(lines)
+            lines.append(f"{nickname}（{user}）：上传 {uploads}，新增唯一包 {unique}。")
+        return messages.report(day, lines, pending=pending, invalid=invalid, failed=failed)
 
     def register(self, upload: Upload) -> int | None:
         if (
@@ -236,6 +235,7 @@ class Collector:
                     "UPDATE uploads SET status='queued', attempts=attempts+1 WHERE id=?",
                     (record_id,),
                 )
+            collected = False
             try:
                 url = await self.api.file_url(row["file_id"], row["busid"])
                 digest = await download(
@@ -254,6 +254,7 @@ class Collector:
                         (digest, relative, self.clock(), record_id),
                     )
                 log.info("已收集上传记录 %s (%s bytes)", record_id, row["size"])
+                collected = True
             except InvalidPackage as exc:
                 self._failed(record_id, "invalid", str(exc))
             except (OSError, sqlite3.Error) as exc:
@@ -272,6 +273,16 @@ class Collector:
                 self._failed(record_id, "failed", error)
             finally:
                 part.unlink(missing_ok=True)
+            if collected and row["collected_at"] is None:
+                # A notice failure must not turn an archived file into a failed download.
+                try:
+                    await self.api.send_message(
+                        messages.receipt(row["name"], row["uploader_id"], row["nickname"])
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "上传记录 %s 的收包回复发送失败 (%s)", record_id, type(exc).__name__
+                    )
             await self._cleanup(record_id)
             return True
 

@@ -131,6 +131,6 @@ class NapCat:
         if result["result"] != 0:
             raise ValueError(f"QQ 拒绝删除群文件，错误码 {result['result']}")
 
-    async def send_report(self, text: str) -> None:
+    async def send_message(self, text: str) -> None:
         # Force plain text so group nicknames cannot inject CQ commands.
         await self._call("send_group_msg", message=Message(MessageSegment.text(text)))

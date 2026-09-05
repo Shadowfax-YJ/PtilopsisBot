@@ -8,9 +8,9 @@ import httpx
 import pytest
 from nonebot.adapters.onebot.v11 import ActionFailed
 
-from databot.collector import Collector, OfflineError
-from databot.config import Settings
-from databot.napcat import NapCat
+from ptilopsisbot.collector import Collector, OfflineError
+from ptilopsisbot.config import Settings
+from ptilopsisbot.napcat import NapCat
 
 
 class FilesRPC:
@@ -34,6 +34,8 @@ class FilesRPC:
     async def call_api(self, api: str, **data: Any) -> object:
         if api == "get_status":
             return {"online": self.online}
+        if api == "send_group_msg":
+            return {"message_id": 1}
         if api == "get_group_root_files":
             self.generation += 1
             self.handles = {

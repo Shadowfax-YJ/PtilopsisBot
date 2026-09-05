@@ -7,8 +7,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import httpx
 import pytest
 
-from databot.collector import Collector, Upload
-from databot.config import Settings
+from ptilopsisbot.collector import Collector, Upload
+from ptilopsisbot.config import Settings
 
 
 def test_repeat_observation_survives_restart_without_double_counting(tmp_path: Path) -> None:
@@ -32,6 +32,9 @@ class FakeGroup:
     def __init__(self) -> None:
         self.files: set[str] = {"file-a"}
         self.delete_error: Exception | None = None
+        self.messages: list[str] = []
+        self.message_error: Exception | None = None
+        self.message_attempts = 0
 
     async def file_url(self, file_id: str, busid: int) -> str:
         return "https://files.test/run.zip"
@@ -42,6 +45,12 @@ class FakeGroup:
         if file_id not in self.files:
             raise ValueError("源文件未找到")
         self.files.remove(file_id)
+
+    async def send_message(self, text: str) -> None:
+        self.message_attempts += 1
+        if self.message_error:
+            raise self.message_error
+        self.messages.append(text)
 
 
 def zip_bytes() -> bytes:
@@ -69,7 +78,73 @@ async def test_collects_zip_before_removing_group_source(tmp_path: Path) -> None
         assert (tmp_path / record["archive_path"]).read_bytes() == body
         assert group.files == set()
         assert record["deleted_at"] is not None
+        assert len(group.messages) == 1
+        assert "run-20260905-120000-000001.zip" in group.messages[0]
+        assert "未验证游戏内容" in group.messages[0]
         collector.close()
+
+
+async def test_collection_reply_is_not_repeated_by_rescan_restart_or_manual_retry(
+    tmp_path: Path,
+) -> None:
+    body = zip_bytes()
+    group = FakeGroup()
+    settings = Settings(group_id=123, data_dir=tmp_path, auto_delete=False, min_free_gib=0)
+    upload = Upload(
+        123, "file-a", 102, 456, "run-20260905-120000-000001.zip", len(body), 1788580800
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    ) as http:
+        collector = Collector(settings, api=group, http=http)
+        record_id = collector.register(upload)
+        assert record_id is not None
+        await collector.process_once()
+        collector.register(upload)
+        assert not await collector.process_once()
+        collector.close()
+
+        collector = Collector(settings, api=group, http=http)
+        try:
+            assert collector.register(upload) == record_id
+            assert not await collector.process_once()
+            await collector.retry(record_id)
+            await collector.process_once()
+            assert len(group.messages) == 1
+        finally:
+            collector.close()
+
+
+@pytest.mark.parametrize("error", [RuntimeError("send failed"), OSError("connection lost")])
+async def test_reply_failure_does_not_undo_collection_or_prevent_cleanup(
+    tmp_path: Path,
+    error: Exception,
+) -> None:
+    body = zip_bytes()
+    group = FakeGroup()
+    group.message_error = error
+    settings = Settings(group_id=123, data_dir=tmp_path, delete_grace_hours=0, min_free_gib=0)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    ) as http:
+        collector = Collector(settings, api=group, http=http)
+        try:
+            record_id = collector.register(
+                Upload(
+                    123, "file-a", 102, 456, "run-20260905-120000-000001.zip", len(body), 1788580800
+                )
+            )
+            assert record_id is not None
+            await collector.process_once()
+            record = collector.record(record_id)
+            assert record["status"] == "archived"
+            assert record["attempts"] == 1
+            assert group.message_attempts == 1
+            assert record["deleted_at"] is not None
+            assert not group.files
+            assert (tmp_path / record["archive_path"]).read_bytes() == body
+        finally:
+            collector.close()
 
 
 async def test_corrupt_archive_keeps_source_and_manual_retry_repairs_it(tmp_path: Path) -> None:
@@ -135,6 +210,7 @@ async def test_does_not_delete_uncollected_files_or_when_disabled(
             "disabled": "archived",
         }
         assert collector.record(record_id)["status"] == expected[case]
+        assert len(group.messages) == (1 if case == "disabled" else 0)
         collector.close()
 
 
@@ -273,7 +349,7 @@ def test_scan_corrects_day_and_conflicting_metadata_does_not_overwrite_identity(
     collector.register(Upload(123, "a", 102, 789, name, 100, 1788580800))
     assert collector.record(first)["uploader_id"] == 456
     assert "新名字（456）：上传 1" in collector.report(date(2026, 9, 5))
-    assert "当天没有登记的对局包" in collector.report(date(2026, 9, 6))
+    assert "当日未发现已登记的对局包" in collector.report(date(2026, 9, 6))
     assert collector.register(Upload(999, "a", 102, 456, name, 100, 1788580800)) is None
     assert collector.register(Upload(123, "b", 102, 456, name, 100, 1788580800)) != first
     collector.close()

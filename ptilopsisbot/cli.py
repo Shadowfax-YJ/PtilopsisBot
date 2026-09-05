@@ -11,7 +11,9 @@ from .config import load_settings
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="单群对局包收集与群文件清理")
+    parser = argparse.ArgumentParser(
+        prog="ptilopsisbot", description="PtilopsisBot · 单群对局包收集与群文件清理"
+    )
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="运行机器人")
@@ -46,7 +48,7 @@ def main() -> None:
         with httpx.Client(timeout=600, trust_env=False) as client:
             response = client.request(
                 method,
-                f"http://127.0.0.1:{settings.port}/databot/{path}",
+                f"http://127.0.0.1:{settings.port}/ptilopsisbot/{path}",
                 headers={"Authorization": "Bearer " + settings.access_token.get_secret_value()},
             )
         if response.is_error:
@@ -54,7 +56,7 @@ def main() -> None:
             raise SystemExit(1)
         print(json.dumps(response.json(), ensure_ascii=False, indent=2))
     except httpx.ConnectError:
-        parser.exit(1, "机器人未运行，请先执行 databot run\n")
+        parser.exit(1, "机器人未运行，请先执行 ptilopsisbot run\n")
     except (OSError, ValueError) as exc:
         parser.exit(1, f"配置或文件错误: {exc}\n")
 

@@ -73,7 +73,7 @@ def run(settings: Settings) -> None:
     async def daily_report() -> None:
         day = datetime.now(SHANGHAI).date() - timedelta(days=1)
         try:
-            await api.send_report(collector.report(day))
+            await api.send_message(collector.report(day))
         except Exception as exc:
             log.warning("日报 %s 发送失败 (%s)，可使用 report 命令补发", day, type(exc).__name__)
 
@@ -165,7 +165,7 @@ def run(settings: Settings) -> None:
 
     auth = [Depends(authorize)]
 
-    @app.get("/databot/status", dependencies=auth)
+    @app.get("/ptilopsisbot/status", dependencies=auth)
     async def status() -> dict[str, Any]:
         records = collector.records()
         return {
@@ -176,12 +176,12 @@ def run(settings: Settings) -> None:
             "records": [dict(row) for row in records[-50:]],
         }
 
-    @app.post("/databot/scan", dependencies=auth)
+    @app.post("/ptilopsisbot/scan", dependencies=auth)
     async def request_scan() -> dict[str, str]:
         await scheduled_scan()
         return {"status": "queued"}
 
-    @app.post("/databot/retry/{record_id}", dependencies=auth)
+    @app.post("/ptilopsisbot/retry/{record_id}", dependencies=auth)
     async def request_retry(record_id: int) -> dict[str, str]:
         try:
             await collector.retry(record_id)
@@ -190,11 +190,11 @@ def run(settings: Settings) -> None:
         wake.set()
         return {"status": "queued"}
 
-    @app.post("/databot/report/{day}", dependencies=auth)
+    @app.post("/ptilopsisbot/report/{day}", dependencies=auth)
     async def request_report(day: date) -> dict[str, str]:
         text = collector.report(day)
         try:
-            await api.send_report(text)
+            await api.send_message(text)
         except Exception as exc:
             raise HTTPException(503, f"发送失败: {type(exc).__name__}") from exc
         return {"report": text}

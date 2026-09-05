@@ -1,16 +1,18 @@
-# QQ 对局数据小助手
+# PtilopsisBot
 
-将群里的 `run-YYYYMMDD-HHMMSS-NNNNNN.zip` 下载到本机，检查完整性，再清理对应群文件腾出空间。默认群号为 **1095012141**，只主动扫描根目录。
+一个采用《明日方舟》干员白面鸮说话风格的 QQ 群对局数据小助手。将 `run-YYYYMMDD-HHMMSS-NNNNNN.zip` 下载到本机，检查完整性，再清理对应群文件腾出空间。默认群号为 **1095012141**，只主动扫描根目录。
 
 ## 安装与启动（Windows / Python 3.11+）
 
-NapCat 和小助手都放在那台 24 小时开机的 Windows 电脑上。两者通过本机连接，开发电脑可以关机，无需公网 IP 或端口映射。示例目录为 `D:\Projects\databot`。
+NapCat 和小助手都放在那台 24 小时开机的 Windows 电脑上。两者通过本机连接，开发电脑可以关机，无需公网 IP 或端口映射。示例目录为 `D:\Projects\PtilopsisBot`。
+
+已有安装目录可以保留原名，配置和 `data` 不需要迁移。更新代码后重新运行 `.\.venv\Scripts\python.exe -m pip install -e .`，使用 `start.ps1` 或新的 `python -m ptilopsisbot run` 启动；旧的 `python -m databot` 已改名。本机管理接口前缀同步改为 `/ptilopsisbot`。
 
 新电脑安装 Python 3.12 和 GitHub CLI，登录有私有仓库权限的 GitHub 账号后执行（已有项目时用 `git pull` 更新）：
 
 ```powershell
-gh repo clone Shadowfax-YJ/qq-game-data-collector D:\Projects\databot
-cd D:\Projects\databot
+gh repo clone Shadowfax-YJ/PtilopsisBot D:\Projects\PtilopsisBot
+cd D:\Projects\PtilopsisBot
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
@@ -25,7 +27,7 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 4. 运行机器人：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m databot run
+.\.venv\Scripts\python.exe -X utf8 -m ptilopsisbot run
 ```
 
 修改配置后重启。默认 `auto_delete=true`，每个包保存成功满 24 小时后可清理；将 `delete_grace_hours` 改为 `0` 可在保存和检查通过后立即释放群空间。启动补扫会收集根目录里已有的符合条件的包。
@@ -37,11 +39,11 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 机器人常驻时，在另一个终端执行：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m databot status
-.\.venv\Scripts\python.exe -X utf8 -m databot scan
-.\.venv\Scripts\python.exe -X utf8 -m databot retry 12
-.\.venv\Scripts\python.exe -X utf8 -m databot report 2026-09-05
-.\.venv\Scripts\python.exe -X utf8 -m databot report 2026-09-05 --preview
+.\.venv\Scripts\python.exe -X utf8 -m ptilopsisbot status
+.\.venv\Scripts\python.exe -X utf8 -m ptilopsisbot scan
+.\.venv\Scripts\python.exe -X utf8 -m ptilopsisbot retry 12
+.\.venv\Scripts\python.exe -X utf8 -m ptilopsisbot report 2026-09-05
+.\.venv\Scripts\python.exe -X utf8 -m ptilopsisbot report 2026-09-05 --preview
 ```
 
 `status` 查看连接和最近 50 条上传记录；`scan` 请求补扫并检查到期清理，返回 `queued` 后由后台执行；`retry` 使用上传记录 ID 重试；`report` 发回目标群，`--preview` 只在本机查看。命令通过同一个本机端口和 token 操作正在运行的机器人，不会启动第二个下载进程。正常 Ctrl+C 停止机器人即可暂停采集和清理。
@@ -49,6 +51,37 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 上传通知触发根目录补扫；连接、重连及每 30 分钟也会补扫。所有扫描、下载和清理由同一个后台循环顺序执行。单次请求最多 1000 项，达到上限会提示日志，不承诺完整枚举更大的根目录；包需直接上传到根目录，不收集子目录。下载失败每隔 5 分钟重试，合计最多 3 次；检查不通过或耗尽次数后看错误原因，处理完再 `retry`。每轮处理和远程操作前检查 QQ 在线状态，掉线暂停，不消耗单个文件的重试次数。
 
 每天北京时间 00:05 发前一天日报，分别统计上传次数和按完整 ZIP 哈希去重的新增唯一包数。相同包的新增贡献归首次收集成功的上传记录；迟到完成和离线漏发可手动重发。当前只检查 ZIP 可读性，待真实游戏样本到位后补必需文件与字段检查。
+
+## 群内回复风格
+
+修改或新增群内回复时，沿用以下约定。参考游戏内中文[语音记录](https://prts.wiki/w/%E7%99%BD%E9%9D%A2%E9%B8%AE/%E8%AF%AD%E9%9F%B3%E8%AE%B0%E5%BD%95)与[角色档案](https://prts.wiki/w/%E7%99%BD%E9%9D%A2%E9%B8%AE)的公开转录；文案为适配本助手的原创表达。
+
+- 白面鸮是有情感的医疗干员与数据维护员。保持冷静、礼貌和含蓄的关心，以短句说明对象、状态和结果；自称可以使用“白面鸮”。
+- 用少量“检索”“数据汇总”“校验”等与实际工作对应的词。句子保持自然、信息完整，偶尔停顿即可。
+- 数字、失败原因和处理建议准确优先。“数据汇总完成”只说明统计完成，不能把仍待处理的包说成已归档，也不能把 ZIP 可读说成游戏内容有效。
+- 休眠与故障措辞只用于真实对应状态；收集、删除、错误和统计通知不插入睡眠、初始化数据库或权限变化的玩笑。
+- 使用“您”或成员昵称，不默认所有群成员都是博士。表达克制，不加入卖萌口癖、网络谐音梗或擅自补写人物关系与经历。
+
+群内回复有两处：每条对局包首次下载、校验并成功归档后发送收包回复；次日发送日报。两处各有 8 套文案，每次从对应模板池随机选择，允许偶尔重复。模板位于 [ptilopsisbot/messages.py](ptilopsisbot/messages.py)，数字、文件名和校验范围保持一致；没有接入闲聊模型。
+
+重复通知、补扫、重启或对同一份已收集数据手动重试不会重复发送收包回复。另一次可区分的上传会收到自己的回复，包括内容重复的 ZIP。归档失败或检查不通过时不发成功回复。发送失败只记日志，不影响收集与清理，不建立通知重试队列；日报可以手动补发。
+
+示例：
+
+```text
+白面鸮已保存这份对局包。相关数据已登记。
+上传者：小张（456）。
+文件：run-20260905-120000-000001.zip
+校验范围：仅检查 ZIP 可读性，未验证游戏内容。
+```
+
+```text
+白面鸮已完成本次数据汇总。请查阅。
+统计日期：2026-09-05。
+小张（456）：上传 2，新增唯一包 1。
+处理状态：待处理 0，检查不通过 0，处理失败 0。
+校验范围：仅检查 ZIP 可读性，未验证游戏内容。
+```
 
 ## 保存和清理规则
 
@@ -61,14 +94,14 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 
 ## 开机运行
 
-关闭 Windows 接通电源时的自动睡眠。用任务计划程序新建一个登录触发的任务，程序为 `powershell.exe`，参数为 `-NoProfile -ExecutionPolicy Bypass -File "D:\Projects\databot\start.ps1"`。设置“如果任务已在运行，不启动新实例”，并关闭默认的运行时长限制。NapCat 也要设置启动并保持 QQ 登录；先分别手动跑通，再配置自启动。
+关闭 Windows 接通电源时的自动睡眠。用任务计划程序新建一个登录触发的任务，程序为 `powershell.exe`，参数为 `-NoProfile -ExecutionPolicy Bypass -File "D:\Projects\PtilopsisBot\start.ps1"`。设置“如果任务已在运行，不启动新实例”，并关闭默认的运行时长限制。NapCat 也要设置启动并保持 QQ 登录；先分别手动跑通，再配置自启动。
 
 ## 验证与当前进度
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m mypy
-.\.venv\Scripts\python.exe -m ruff check databot tests
+.\.venv\Scripts\python.exe -m ruff check ptilopsisbot tests
 .\.venv\Scripts\python.exe -X utf8 -m pytest -q
 ```
 

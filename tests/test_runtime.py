@@ -57,7 +57,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
     log_path = tmp_path / "bot.log"
     with log_path.open("wb") as output:
         process = subprocess.Popen(
-            [sys.executable, "-X", "utf8", "-m", "databot", "--config", str(config), "run"],
+            [sys.executable, "-X", "utf8", "-m", "ptilopsisbot", "--config", str(config), "run"],
             stdout=output,
             stderr=subprocess.STDOUT,
         )
@@ -67,14 +67,16 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                     if process.poll() is not None:
                         raise AssertionError(log_path.read_text(encoding="utf-8"))
                     try:
-                        if (await http.get("/databot/status", headers=headers)).status_code == 200:
+                        if (
+                            await http.get("/ptilopsisbot/status", headers=headers)
+                        ).status_code == 200:
                             break
                     except httpx.ConnectError:
                         pass
                     await asyncio.sleep(0.1)
                 else:
                     raise AssertionError("Bot did not start")
-                assert (await http.get("/databot/status")).status_code == 401
+                assert (await http.get("/ptilopsisbot/status")).status_code == 401
                 async with connect(
                     f"ws://127.0.0.1:{port}/onebot/v11/",
                     additional_headers={**headers, "X-Self-ID": "999"},
@@ -158,7 +160,7 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                         await websocket.send(json.dumps(notice))
                         await websocket.send(json.dumps(notice))
                         for _ in range(200):
-                            state = (await http.get("/databot/status", headers=headers)).json()
+                            state = (await http.get("/ptilopsisbot/status", headers=headers)).json()
                             if state["records"] and state["records"][0]["deleted_at"]:
                                 break
                             if responder.done():
@@ -168,13 +170,18 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                             raise AssertionError(log_path.read_text(encoding="utf-8"))
                         assert group_files == set()
                         assert len(state["records"]) == 1
+                        assert len(reports) == 1
+                        assert "run-20260905-120000-000001.zip" in reports[0]
                         saved = tmp_path / "data" / state["records"][0]["archive_path"]
                         assert saved.stat().st_size == package.stat().st_size
                         with ZipFile(saved) as archive:
                             assert archive.testzip() is None
-                        response = await http.post("/databot/report/2026-09-05", headers=headers)
+                        response = await http.post(
+                            "/ptilopsisbot/report/2026-09-05", headers=headers
+                        )
                         assert response.status_code == 200
-                        assert "新增唯一包 1" in reports[0]
+                        assert len(reports) == 2
+                        assert "新增唯一包 1" in reports[-1]
                     finally:
                         responder.cancel()
                         await asyncio.gather(responder, return_exceptions=True)
