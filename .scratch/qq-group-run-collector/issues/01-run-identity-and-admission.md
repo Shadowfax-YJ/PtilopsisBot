@@ -1,7 +1,7 @@
 # 识别上传并登记
 
 Type: task
-Status: open
+Status: implemented; live acceptance pending
 
 ## 实现
 

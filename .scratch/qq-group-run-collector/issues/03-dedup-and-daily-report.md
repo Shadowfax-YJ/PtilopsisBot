@@ -1,7 +1,7 @@
 # 去重和每日贡献统计
 
 Type: task
-Status: open
+Status: implemented; live acceptance pending
 
 ## 实现
 

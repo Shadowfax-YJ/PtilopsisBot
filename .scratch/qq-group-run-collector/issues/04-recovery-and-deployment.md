@@ -1,7 +1,7 @@
 # 补扫、重试和本机运行
 
 Type: task
-Status: open
+Status: implemented; live acceptance pending
 
 ## 实现
 

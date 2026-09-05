@@ -1,7 +1,7 @@
 # 下载、检查并保存 ZIP
 
 Type: task
-Status: open
+Status: implemented; live acceptance pending
 
 ## 实现
 

@@ -1,0 +1,13 @@
+# Copy to config.toml. Use the same token in NapCat's WebSocket client.
+group_id = 1095012141
+access_token = ""
+port = 8080
+data_dir = "data"
+
+# Group cleanup is part of the core workflow. Use false only to pause it.
+auto_delete = true
+# Set to 0 to free group space immediately after local checks pass.
+delete_grace_hours = 24
+max_file_mib = 256
+min_free_gib = 2
+root_file_count = 1000

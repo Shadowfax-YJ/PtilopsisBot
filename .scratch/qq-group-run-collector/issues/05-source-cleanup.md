@@ -1,7 +1,7 @@
 # 群文件清理与空间释放
 
 Type: task
-Status: open
+Status: implemented; live acceptance pending
 
 ## 实现
 
