@@ -50,7 +50,12 @@ test('real embedded server and rclone preserve old content; quit kills children'
   const originalTime = (await fs.stat(path.join(target, 'old.txt'))).mtimeMs;
   const engine = new Engine({ dataDir: path.join(root, 'data'), vendorDir, update() {}, async persist() {}, notify() {} });
   t.after(async () => { await engine.close(); await fs.rm(root, { recursive: true, force: true }); });
-  await engine.start();
+  const crypto = require('node:crypto'), randomBytes = crypto.randomBytes;
+  // Force a valid random-password shape beginning with '-' so the real CLI
+  // regression does not depend on hitting its roughly 1-in-64 probability.
+  crypto.randomBytes = size => Buffer.alloc(size, 251);
+  try { await engine.start(); } finally { crypto.randomBytes = randomBytes; }
+  assert(engine.password.startsWith('-'));
   engine.auth = 'expired-local-service-token';
   await engine.start();
   assert.notEqual(engine.auth, 'expired-local-service-token');

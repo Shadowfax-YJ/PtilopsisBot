@@ -72,7 +72,7 @@ class Engine {
       cors: { allow_origins: [`http://127.0.0.1:${this.port}`], allow_methods: ['GET', 'POST', 'HEAD', 'PROPFIND'], allow_headers: ['Authorization', 'Content-Type'] }
     });
     await atomicJson(configPath, config);
-    await this.command('openlist', ['admin', 'set', this.password, '--data', dir]);
+    await this.command('openlist', ['admin', 'set', '--data', dir, '--', this.password]);
     if (signal?.aborted) throw abortError();
     this.server = this.spawn('openlist', ['server', '--data', dir]);
     this.server.stdout.resume(); this.server.stderr.resume();
