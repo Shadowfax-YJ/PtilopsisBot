@@ -3,7 +3,7 @@ const https = require('node:https');
 const crypto = require('node:crypto');
 const { CookieJar } = require('tough-cookie');
 
-const API = 'https://drive.quark.cn/1/clouddrive';
+const API = 'https://drive-pc.quark.cn/1/clouddrive';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch';
 function abortError() { return new DOMException('已停止', 'AbortError'); }
 function delay(ms, signal) {
@@ -62,7 +62,11 @@ class Quark {
       if (redirects >= 5 || !result.headers.location) throw new Error('夸克登录重定向失败');
       return this.raw(new URL(result.headers.location, url).href, { signal, redirects: redirects + 1 });
     }
-    if (result.status !== 200) throw new Error(`夸克请求失败（HTTP ${result.status}），请检查登录状态或稍后重试`);
+    if (result.status !== 200) {
+      const error = new Error(`夸克请求失败（HTTP ${result.status}），请检查登录状态或稍后重试`);
+      try { const detail = JSON.parse(result.text); error.remoteCode = detail.code; error.remoteMessage = String(detail.message || detail.msg || '').replace(/https?:\/\/\S+/g, '[URL]').replace(/[a-fA-F0-9]{24,}/g, '[ID]').slice(0, 200); } catch {}
+      throw error;
+    }
     try { return JSON.parse(result.text); } catch { throw new Error('夸克返回了无法识别的响应'); }
   }
   async request(endpoint, params = {}, body, signal) {
@@ -96,6 +100,7 @@ class Quark {
         ...(share ? { pwd_id: share.id, stoken: share.token, _fetch_share: 1, force: 0, ver: 2 } : {})
       }, undefined, signal);
       const batch = json.data?.list;
+      if (share && json.data?.is_owner !== undefined) share.isOwner = Number(json.data.is_owner) === 1;
       if (!Array.isArray(batch)) throw new Error('夸克目录列表格式异常');
       for (const item of batch) {
         if (!item.fid || typeof item.file_name !== 'string') throw new Error('夸克文件信息不完整');

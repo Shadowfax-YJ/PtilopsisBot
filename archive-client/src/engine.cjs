@@ -98,6 +98,22 @@ class Engine {
   }
   async shareRoot(job, signal) {
     const share = await this.quark.shareToken(job.source.share, signal);
+    const sourceFid = job.source.fid || '0';
+    const entries = await this.quark.list(sourceFid, signal, share);
+    if (share.isOwner) {
+      // A share's virtual root is not the account root. Only expose entries
+      // actually present in the share, even when its real parent has siblings.
+      let fid = sourceFid;
+      if (sourceFid === '0' && entries.length) {
+        const parents = new Set(entries.map(item => item.pdir_fid));
+        if (parents.size !== 1 || typeof entries[0].pdir_fid !== 'string')
+          throw new Error('这是自己的分享，请在来源选择中进入要订阅的文件夹后再选择');
+        fid = entries[0].pdir_fid;
+      }
+      const client = { list: (parent, requestSignal) => parent === fid
+        ? Promise.resolve(entries) : this.quark.list(parent, requestSignal, share) };
+      return { fid, client };
+    }
     if (!job.source.targetFid) {
       const rootName = 'Archive 订阅';
       const root = (await this.quark.list('0', signal)).find(x => x.file_name === rootName && (x.dir || x.file === false || x.file_type === 0));
@@ -111,7 +127,7 @@ class Engine {
     this.update(job.id, { phase: 'saving', current: '检查分享中的新增内容' });
     await reconcileShare(this.quark, share, job.source.fid || '0', job.source.targetFid, signal,
       progress => this.update(job.id, progress));
-    return job.source.targetFid;
+    return { fid: job.source.targetFid, client: this.quark };
   }
   async run(job) {
     if (this.running) throw new Error('已有订阅正在运行，请稍后再试');
@@ -120,8 +136,9 @@ class Engine {
     let filesFile;
     try {
       this.update(job.id, { phase: 'checking', error: '', current: '连接夸克', discovered: 0, skipped: 0, transferred: 0, bytes: 0 });
-      const fid = job.source.kind === 'share' ? await this.shareRoot(job, signal) : job.source.fid;
-      const plan = await prepareFiles(this.quark, fid, job.destination, signal, progress => this.update(job.id, progress));
+      const { fid, client } = job.source.kind === 'share' ? await this.shareRoot(job, signal)
+        : { fid: job.source.fid, client: this.quark };
+      const plan = await prepareFiles(client, fid, job.destination, signal, progress => this.update(job.id, progress));
       if (plan.files.length) {
         const mountPath = await this.mount(job, fid, signal);
         filesFile = path.join(this.dataDir, 'files-' + job.id + '.txt');

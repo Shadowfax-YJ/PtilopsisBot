@@ -9,6 +9,37 @@ const { delay } = require('../src/quark.cjs');
 const vendorDir = path.join(__dirname, '..', 'vendor', `${process.platform}-${process.arch}`);
 const haveVendor = require('node:fs').existsSync(path.join(vendorDir, 'openlist' + (process.platform === 'win32' ? '.exe' : '')));
 
+test('own share root never expands into unshared siblings or tries to save itself', async () => {
+  const shared = [{ fid: 'shared-folder', pdir_fid: 'private-parent', file_name: 'archive', file: false }];
+  const calls = [];
+  const quark = {
+    shareToken: async () => ({}),
+    list: async (fid, _signal, share) => {
+      assert(share, 'all scans must remain scoped to the share'); calls.push(fid); share.isOwner = true;
+      if (fid === '0') return shared;
+      if (fid === 'shared-folder') return [{ fid: 'document', file_name: 'new.txt', file: true }];
+      throw new Error('Attempted to scan the private parent');
+    },
+    mkdir() { throw new Error('Own shares must not create a cloud copy'); }
+  };
+  const engine = new Engine({ quark });
+  const source = await engine.shareRoot({ source: { share: {}, fid: '0' } });
+  assert.equal(source.fid, 'private-parent');
+  assert.deepEqual(await source.client.list(source.fid), shared);
+  assert.equal((await source.client.list('shared-folder'))[0].file_name, 'new.txt');
+  assert.deepEqual(calls, ['0', 'shared-folder']);
+  const selected = await engine.shareRoot({ source: { share: {}, fid: 'shared-folder' } });
+  assert.equal(selected.fid, 'shared-folder');
+  assert.equal((await selected.client.list(selected.fid))[0].file_name, 'new.txt');
+});
+
+test('own share with an ambiguous virtual root requires selecting a folder', async () => {
+  const engine = new Engine({ quark: { shareToken: async () => ({}), list: async (_fid, _signal, share) => {
+    share.isOwner = true; return [{ pdir_fid: 'parent-a' }, { pdir_fid: 'parent-b' }];
+  } } });
+  await assert.rejects(() => engine.shareRoot({ source: { share: {}, fid: '0' } }), /进入要订阅/);
+});
+
 test('real embedded server and rclone preserve old content; quit kills children', { skip: !haveVendor, timeout: 60000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-engine-'));
   const source = path.join(root, 'source'), target = path.join(root, 'target');

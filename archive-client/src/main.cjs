@@ -22,6 +22,7 @@ const uiPath = path.join(__dirname, 'ui', 'index.html');
 let config = { version: 1, paused: false, notifications: true, jobs: [] };
 let loggedIn = false, window, tray, engine, quark, loginController, loginState = { state: 'idle' };
 let quitting = false, exiting = false, timer, writeQueue = Promise.resolve();
+let pauseGeneration = 0;
 const states = new Map(), selectedFolders = new Set(), approvedSources = new Map();
 let selectedShare = null;
 
@@ -68,7 +69,7 @@ function notify(title, body) {
 function update(id, state) { states.set(id, { ...states.get(id), ...state }); emit(); }
 function show() { if (window && !window.isDestroyed()) { window.show(); window.focus(); } }
 async function setPaused(paused) {
-  config.paused = Boolean(paused); if (paused) engine.stop();
+  config.paused = Boolean(paused); if (paused) { pauseGeneration++; engine.stop(); }
   else for (const job of config.jobs) if (job.enabled) job.nextRun = Date.now();
   await persist(); if (!paused) tick();
 }
@@ -79,8 +80,9 @@ async function runJob(job) {
   await engine.run(job); emit();
 }
 async function checkAll() {
+  const generation = pauseGeneration;
   for (const job of config.jobs.filter(x => x.enabled)) {
-    if (quitting || engine.running) break;
+    if (quitting || engine.running || generation !== pauseGeneration) break;
     await runJob(job).catch(err => update(job.id, { phase: 'error', error: safeError(err), current: safeError(err) }));
   }
 }
@@ -244,6 +246,9 @@ async function makeWindow() {
 
 async function smokeTest() {
   window.showInactive();
+  // Check the packaged service paths and executable permissions as well as UI.
+  await engine.command('rclone', ['version']);
+  await engine.start(); await engine.close();
   const errors = [];
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) errors.push(message); });
   await delay(500);
@@ -278,7 +283,7 @@ async function smokeTest() {
   const output = process.env.ARCHIVE_SMOKE_OUTPUT || path.join(dataDir, 'smoke.png');
   await fs.mkdir(path.dirname(output), { recursive: true }); await fs.writeFile(output, png.toPNG());
   assert(errors.length === 0, 'renderer error: ' + errors.join('; '));
-  await atomicJson(path.join(path.dirname(output), 'smoke-result.json'), { ok: true, platform: process.platform, arch: process.arch, version: app.getVersion(), checks: ['render', 'folder picker', 'drive subscription', 'pause persistence', 'share parsing', 'share subfolder'], screenshot: path.basename(output) });
+  await atomicJson(path.join(path.dirname(output), 'smoke-result.json'), { ok: true, platform: process.platform, arch: process.arch, version: app.getVersion(), checks: ['packaged rclone', 'packaged OpenList startup and shutdown', 'render', 'folder picker', 'drive subscription', 'pause persistence', 'share parsing', 'share subfolder'], screenshot: path.basename(output) });
   await quit();
 }
 

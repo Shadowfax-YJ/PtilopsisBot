@@ -28,6 +28,7 @@ async function main() {
   for (const name of ['README-便携版.txt', 'THIRD_PARTY.md', 'LICENSE']) await fs.copyFile(path.join(root, name), path.join(appDir, name));
   if (platform === 'darwin') {
     const bundle = path.join(appDir, 'Archive Subscriptions.app');
+    await require('./macos-compat.cjs').verifyMacOS12(bundle);
     execFileSync('codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'inherit' });
     execFileSync('codesign', ['--verify', '--deep', '--strict', bundle], { stdio: 'inherit' });
   }

@@ -33,6 +33,17 @@ async function main() {
       base: `https://downloads.rclone.org/v${versions.rclone}/`, sums: 'SHA256SUMS' }
   ];
   for (const item of specifications) {
+    if (platform === 'darwin' && item.name === 'rclone') {
+      // The upstream macOS binary was linked with a newer deployment target.
+      // Build the unchanged pinned module without cgo for macOS 12 support.
+      execFileSync('go', ['install', '-trimpath', '-ldflags', `-s -w -X github.com/rclone/rclone/fs.Version=v${versions.rclone}`,
+        `github.com/rclone/rclone@v${versions.rclone}`], {
+        stdio: 'inherit', env: { ...process.env, CGO_ENABLED: '0', MACOSX_DEPLOYMENT_TARGET: '12.0',
+          GOTOOLCHAIN: 'local', GOSUMDB: 'sum.golang.org', GOBIN: destination }
+      });
+      console.log(`Built rclone ${versions.rclone} from checksum-verified upstream Go module for macOS 12`);
+      continue;
+    }
     const zip = path.join(scratch, item.file), sumsPath = path.join(scratch, item.name + '-sums.txt');
     await download(item.base + item.file, zip);
     let expected = item.sha256;
