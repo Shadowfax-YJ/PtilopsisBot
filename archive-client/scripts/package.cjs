@@ -14,7 +14,7 @@ async function main() {
     appBundleId: 'local.archive.subscriptions', appVersion: version, buildVersion: version,
     platform, arch, electronVersion: require('../package.json').devDependencies.electron,
     asar: true, overwrite: true, prune: true,
-    icon: path.join(root, 'assets', 'icon'),
+    icon: path.join(root, 'assets', platform === 'darwin' ? 'icon.icns' : 'icon.ico'),
     ignore: [/^\/out(?:\/|$)/, /^\/vendor(?:\/|$)/, /^\/test(?:\/|$)/, /^\/test-output(?:\/|$)/,
       /^\/scripts(?:\/|$)/, /^\/\.runtime(?:\/|$)/, /^\/\.git(?:\/|$)/, /^\/package-lock\.json$/],
     extraResource: [vendor],
@@ -26,6 +26,7 @@ async function main() {
   const resources = platform === 'darwin' ? path.join(appDir, 'Archive Subscriptions.app', 'Contents', 'Resources') : path.join(appDir, 'resources');
   await fs.rename(path.join(resources, `${platform}-${arch}`), path.join(resources, 'vendor'));
   for (const name of ['README-便携版.txt', 'THIRD_PARTY.md', 'LICENSE']) await fs.copyFile(path.join(root, name), path.join(appDir, name));
+  await fs.cp(path.join(root, 'licenses'), path.join(appDir, 'licenses'), { recursive: true });
   if (platform === 'darwin') {
     const bundle = path.join(appDir, 'Archive Subscriptions.app');
     await require('./macos-compat.cjs').verifyMacOS12(bundle);

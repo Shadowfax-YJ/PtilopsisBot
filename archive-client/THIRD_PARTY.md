@@ -9,3 +9,5 @@
 OpenList and rclone run as separate local processes. Downloaded release archives are checked against upstream SHA-256 release digests/manifests by `scripts/vendor.cjs`. On macOS, rclone is compiled from its unchanged pinned upstream Go module with CGO_ENABLED=0 and a macOS 12 deployment target; Go verifies module checksums against sum.golang.org. Runtime npm dependencies and their license files remain in the application archive. No account credentials are included in the distribution.
 
 The Quark connector implements the web protocol. It does not include the quark-auto-save application or its plugins. Reference documentation: https://github.com/Cp0204/quark-auto-save/wiki/插件配置 .
+
+Full license copies for the two standalone tools are in the adjacent `licenses` directory.
