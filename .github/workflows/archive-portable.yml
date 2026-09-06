@@ -1,0 +1,66 @@
+name: Archive portable packages
+on:
+  push:
+    branches: ['codex/archive-portable']
+    paths: ['archive-client/**', '.github/workflows/archive-portable.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: archive-portable-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: macOS-AppleSilicon
+          - os: windows-latest
+            name: Windows-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: archive-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: archive-client/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run vendor
+      - run: npm test
+      - run: npm run package
+      - name: Smoke test packaged Mac application
+        if: runner.os == 'macOS'
+        run: |
+          test "$(uname -m)" = arm64
+          export ARCHIVE_TEST_DATA_DIR="$RUNNER_TEMP/archive-smoke-data"
+          export ARCHIVE_SMOKE_OUTPUT="$GITHUB_WORKSPACE/archive-client/test-output/mac-smoke.png"
+          "out/Archive Subscriptions-darwin-arm64/Archive Subscriptions.app/Contents/MacOS/ArchiveSubscriptions" --smoke-test
+          cat test-output/smoke-result.json
+      - name: Smoke test packaged Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:ARCHIVE_TEST_DATA_DIR = Join-Path $env:RUNNER_TEMP 'archive-smoke-data'
+          $env:ARCHIVE_SMOKE_OUTPUT = Join-Path $env:GITHUB_WORKSPACE 'archive-client/test-output/windows-smoke.png'
+          $appPath = Join-Path (Get-Location) 'out/Archive Subscriptions-win32-x64/ArchiveSubscriptions.exe'
+          $process = Start-Process -FilePath $appPath -ArgumentList '--smoke-test' -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw 'Packaged smoke test failed' }
+          Get-Content test-output/smoke-result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Archive-${{ matrix.name }}
+          path: |
+            archive-client/out/*portable.zip
+            archive-client/out/*.sha256
+            archive-client/test-output/*.png
+            archive-client/test-output/*.json
+          retention-days: 14
+          compression-level: 0
