@@ -29,7 +29,7 @@ async function main() {
       base: `https://github.com/OpenListTeam/OpenList/releases/download/v${versions.openlist}/`,
       sha256: { 'win32-x64': '10d24913f86843e347eefac219c61224628bbd5d3c7443b2ee119c168a8cb3b9',
         'darwin-arm64': '36bc448b66a34cfea4cc8a5729775baab51194c4f17a685ab1364fc1735005b7' }[`${platform}-${arch}`] },
-    { name: 'rclone', file: `rclone-v${versions.rclone}-${osName}-${cpu}.zip`,
+    { name: 'rclone', file: `rclone-v${versions.rclone}-${platform === 'darwin' ? 'osx' : osName}-${cpu}.zip`,
       base: `https://downloads.rclone.org/v${versions.rclone}/`, sums: 'SHA256SUMS' }
   ];
   for (const item of specifications) {
