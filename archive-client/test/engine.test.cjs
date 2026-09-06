@@ -51,6 +51,9 @@ test('real embedded server and rclone preserve old content; quit kills children'
   const engine = new Engine({ dataDir: path.join(root, 'data'), vendorDir, update() {}, async persist() {}, notify() {} });
   t.after(async () => { await engine.close(); await fs.rm(root, { recursive: true, force: true }); });
   await engine.start();
+  engine.auth = 'expired-local-service-token';
+  await engine.start();
+  assert.notEqual(engine.auth, 'expired-local-service-token');
   await engine.localApi('/api/admin/storage/create', { mount_path: '/fixture', driver: 'Local', order: 0, cache_expiration: 0,
     addition: JSON.stringify({ root_folder_path: source, thumbnail: false, show_hidden: false }) });
   const manifest = path.join(root, 'files.txt'); await fs.writeFile(manifest, 'old.txt\nnested/new.txt\n');

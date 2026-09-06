@@ -37,7 +37,8 @@ class Engine {
   }
   async localApi(endpoint, body, signal) {
     const response = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
-      method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: this.auth },
+      method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json',
+        ...(endpoint === '/api/auth/login' ? {} : { Authorization: this.auth }) },
       body: body === undefined ? undefined : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000)
     });
     const json = await response.json();
@@ -45,7 +46,12 @@ class Engine {
     return json.data;
   }
   async start(signal) {
-    if (this.server && this.server.exitCode === null && this.server.signalCode === null && this.auth) return;
+    if (this.server && this.server.exitCode === null && this.server.signalCode === null && this.auth) {
+      // Refresh the local service token before each download, including after
+      // the app has been left running beyond the token's 48-hour lifetime.
+      const account = await this.localApi('/api/auth/login', { username: 'admin', password: this.password }, signal);
+      this.auth = account.token; return;
+    }
     if (this.starting) return this.starting;
     this.starting = this.startServer(signal).finally(() => { this.starting = null; });
     return this.starting;
