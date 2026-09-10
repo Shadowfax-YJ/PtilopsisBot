@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PtilopsisBot"
+version = "0.1.0"
+description = "Collect game ZIPs from one QQ group and free group storage"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
+requires-python = ">=3.11"
+dependencies = [
+  "nonebot2[fastapi]==2.5.0",
+  "nonebot-adapter-onebot==2.4.6",
+  "httpx==0.28.1",
+  "pydantic>=2.7,<3",
+  "APScheduler==3.11.3",
+  "tzdata>=2025",
+]
+
+[project.urls]
+Repository = "https://github.com/Shadowfax-YJ/PtilopsisBot"
+Issues = "https://github.com/Shadowfax-YJ/PtilopsisBot/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "mypy>=1.18,<2", "ruff>=0.12,<1"]
+
+[project.scripts]
+ptilopsisbot = "ptilopsisbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ptilopsisbot*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["ptilopsisbot"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

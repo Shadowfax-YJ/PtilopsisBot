@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+data/
+config.toml
+.env
+.env.*
+*.log
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+# Local planning, research, and agent notes
+.scratch/
+/CONTEXT.md
+/docs/agents/
+/docs/qq-group-file-bot-feasibility.md

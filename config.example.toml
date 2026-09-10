@@ -1,0 +1,28 @@
+# Copy to config.toml. Use the same token in NapCat's WebSocket client.
+# Replace 0 with your target QQ group ID before starting.
+group_id = 0
+access_token = ""
+port = 8080
+data_dir = "data"
+
+# Group cleanup is part of the core workflow. Use false only to pause it.
+auto_delete = true
+# Disable per-upload replies; daily reports remain enabled.
+send_receipts = false
+# Announce every 500 unique archived ZIPs; omit to disable. Independent of receipts.
+milestone_interval = 500
+# New uploads (and unknown legacy sources): hours after successful local archiving.
+delete_grace_hours = 12
+# Historical backlog: remove after archiving and all local/remote checks pass.
+history_delete_grace_hours = 0
+max_file_mib = 256
+min_free_gib = 2
+# One download slot is reserved for live uploads when this is greater than 1.
+download_concurrency = 3
+# Total download attempts including the first, also for ZIP validation failures.
+download_max_attempts = 3
+# Local/remote verification slots; actual deletion requests remain serialized.
+cleanup_concurrency = 3
+# Group-wide usage including subfolders; omit to disable capacity cleanup.
+# When exceeded, oldest archived packages can be deleted before their retention expires.
+group_storage_limit_gib = 8

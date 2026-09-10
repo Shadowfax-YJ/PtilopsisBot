@@ -1,0 +1,5 @@
+include LICENSE NOTICE.md README.md config.example.toml start.ps1
+prune .scratch
+prune data
+exclude config.toml
+global-exclude *.py[cod]
