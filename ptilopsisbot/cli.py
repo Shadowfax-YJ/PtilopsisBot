@@ -21,6 +21,8 @@ def main() -> None:
     commands.add_parser("scan", help="请求补扫并检查群文件清理条件")
     retry = commands.add_parser("retry", help="重试指定上传记录")
     retry.add_argument("record_id", type=int)
+    plugin_retry = commands.add_parser("plugin-retry", help="仅重试指定记录的后处理插件")
+    plugin_retry.add_argument("record_id", type=int)
     report = commands.add_parser("report", help="发送指定日期日报")
     report.add_argument("day", type=date.fromisoformat)
     report.add_argument("--preview", action="store_true", help="仅本地预览，无需 NapCat 连接")
@@ -40,7 +42,7 @@ def main() -> None:
                 collector.close()
             return
         path = args.command
-        if args.command == "retry":
+        if args.command in {"retry", "plugin-retry"}:
             path += f"/{args.record_id}"
         elif args.command == "report":
             path += f"/{args.day}"

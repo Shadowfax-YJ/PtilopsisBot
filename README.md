@@ -1,5 +1,7 @@
 # PtilopsisBot
 
+已支持通用归档插件和后台处理，配置见 [插件协议](docs/plugins.md)，维护入口为 [extend-collector-plugins](.agents/skills/extend-collector-plugins/SKILL.md)。
+
 一个采用《明日方舟》干员白面鸮说话风格的 QQ 群对局数据小助手。将 `run-YYYYMMDD-HHMMSS-NNNNNN.zip` 下载到本机，检查完整性，再清理对应群文件腾出空间。每个实例配置一个目标群，只主动收集根目录中的对局包。
 
 本仓库仅维护 QQ 群数据收集机器人。夸克网盘定时订阅工具在独立仓库 [quark-timed-sync](https://github.com/Shadowfax-YJ/quark-timed-sync) 维护。
@@ -20,6 +22,8 @@ py -3.12 -m venv .venv
 if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
+
+收集 BlackFlow 并自动后处理时，同一次环境安装使用 `pip install -e '.[blackflow]'`，会带上固定版本的 analysis 业务插件与 OCR。照常启动机器人，即自动验证、补识别并发布到实际 data_dir 下的 `blackflow/published`；夸克备份选择该目录。基础安装仍供其他收集场景使用。后处理无需额外安装器、独立进程或 Windows 任务。
 
 首次配置时，将 `config.toml` 中的 `group_id = 0` 替换为自己的目标 QQ 群号，再把生成的随机值填进 `access_token`。示例中的 0 是占位值，未填写真实群号时不能启动。已有配置保留原值即可。配置和数据目录不会提交到 Git：换电脑需单独带上 `config.toml`；已经收集过数据时先停止旧进程，再完整复制 `data` 目录。新电脑重新建立 `.venv`，不要复制旧虚拟环境；数据目录换位置时同步修改配置里的 `data_dir`。
 
@@ -141,7 +145,9 @@ NapCat v4.18.19 的发行包曾将 QQ 内核删除参数固定为 `busid=102`，
 
 公开仓库不分发 NapCat 修改版或补丁。更新此仓库不会修改已安装的 NapCat；已有部署的兼容性取决于本机安装版本。
 
-## 开机运行
+## 可选：整台机器登录后自启动
+
+正常手动启动机器人即可运行全部后台后处理。以下只用于需要整套机器人和 NapCat 随登录启动的情况。
 
 关闭 Windows 接通电源时的自动睡眠。用任务计划程序新建一个登录触发的任务，程序为 `powershell.exe`，参数为 `-NoProfile -ExecutionPolicy Bypass -File "D:\Bots\PtilopsisBot\start.ps1"`。设置“如果任务已在运行，不启动新实例”，并关闭默认的运行时长限制。NapCat 也要设置启动并保持 QQ 登录；先分别手动跑通，再配置自启动。
 
