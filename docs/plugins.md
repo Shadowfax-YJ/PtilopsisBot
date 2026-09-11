@@ -13,7 +13,9 @@
 
 归档插件配置无 maintenance 时保持原配置摘要，已有交接回执继续有效。领域插件负责决定后台批次执行哪些工作，通用宿主不理解 OCR、快照或游戏字段。
 
-请求包含 protocol_version=1、plugin_id/version、event_id、invocation_id、Unix 秒 deadline、hook=archive.committed、state_dir、input（archive_id/root/path/size/sha256）。响应必须原样返回 protocol_version 与 event_id，以及 ok/retry/unsupported/rejected；每个输出流最多 1 MiB。宿主不把令牌或带签名下载 URL 传给插件。
+请求包含 protocol_version=1、plugin_id/version、event_id、invocation_id、Unix 秒 deadline、hook=archive.committed、state_dir、input（archive_id/root/path/original_name/archive_relative_path/size/sha256）。`original_name` 来自收件记录，`path` 是宿主归档位置，`archive_relative_path` 是相对于宿主 archive 根的原路径，例如 `2026-09-09/123456789/735.zip`。插件保留来源目录和编号文件名，并把上传原名另作元数据。旧协议请求允许缺少两个新增字段。启动时补全历史请求，缺少任一字段的已完成事件也重新投递一次；更新后再次重启不会重复投递。宿主不把令牌或带签名下载 URL 传给插件。
+
+stdout 仍只返回最终 JSON。插件可在 stderr 输出以 `PLUGIN_PROGRESS ` 开头的一行 JSON，内容为 `{event_id: 本次请求 ID, message: 可读进度}`，每条立即 flush。宿主增量读取并显示在机器人原有运行窗口/日志；原样忽略其他诊断、格式错误或不同 event_id 的进度行，过滤控制字符并限制显示长度。响应必须原样返回 protocol_version 与 event_id，以及 ok/retry/unsupported/rejected；每个输出流总计仍最多 1 MiB。无需扩展的插件继续使用原协议，具体工作阶段与计数含义由业务插件提供。
 
 归档提交与插件事件在同一 SQLite 事务登记；`archive_staging` 恢复文件 rename 后中断的窗口。重启补投，使用事件与配置摘要去重。retry 自动退避，unsupported/rejected 等待人工处理；`ptilopsisbot plugin-retry RECORD_ID` 仅重试后处理。`status` 同时显示下载记录和独立插件状态。
 
