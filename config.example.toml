@@ -12,3 +12,13 @@ max_file_mib = 256
 min_free_gib = 2
 # One download slot is reserved for live uploads when this is greater than 1.
 download_concurrency = 3
+
+# Optional trusted local command plugins; paths are relative to this config file.
+# Installed Python plugin packages are discovered automatically; JSON is an optional override.
+# Neither commands nor plugins are discovered in uploads.
+# disabled_plugins = ["example-plugin"]
+plugin_configs = []
+
+# Default policy preserves run-YYYYMMDD-HHMMSS-ffffff.zip behavior.
+# For generic files, configure name_pattern, time_format = "", and validation = "bytes".
+# See docs/plugins.md for TOML examples.

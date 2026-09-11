@@ -1,5 +1,7 @@
 # PtilopsisBot
 
+通用文件收集插件已支持持久化投递、重试和可选清理回执，配置见 [插件接入方案](docs/plugins.md)，维护入口为 [extend-collector-plugins](.agents/skills/extend-collector-plugins/SKILL.md)。领域验证和分析由外部业务插件提供。
+
 一个采用《明日方舟》干员白面鸮说话风格的 QQ 群对局数据小助手。将 `run-YYYYMMDD-HHMMSS-NNNNNN.zip` 下载到本机，检查完整性，再清理对应群文件腾出空间。默认群号为 **1095012141**，只主动扫描根目录。
 
 ## 安装与启动（Windows / Python 3.11+）
@@ -18,6 +20,8 @@ py -3.12 -m venv .venv
 if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
+
+收集 BlackFlow 并自动后处理时，同一次安装环境使用 `pip install -e '.[blackflow]'`，会带上 analysis 业务插件与 OCR。照常启动机器人即自动处理并发布到 `data/blackflow/published`（相对实际 data_dir）；夸克备份选择该目录。基础安装供其他收集场景使用，不引入 OCR。依赖已固定到配套 analysis 提交；功能分支尚未合并时请使用包含本功能的机器人分支。无需另外安装运行器、启动工作进程或为后处理配置 Windows 任务。
 
 首次配置时，把生成的随机值填进 `config.toml` 的 `access_token`。已有配置保留原值即可。配置和数据目录不会提交到 Git：换电脑需单独带上 `config.toml`；已经收集过数据时先停止旧进程，再完整复制 `data` 目录。新电脑重新建立 `.venv`，不要复制旧虚拟环境；数据目录换位置时同步修改配置里的 `data_dir`。
 
@@ -119,7 +123,9 @@ pause
 - 本地空间低于 2 GiB、账号离线或数据库不可写时暂停下载与清理。修复后自动继续；日志位于 `data/collector.log`，最多保留约 20 MiB。
 - 本地文件不自动清理。需要备份时停止机器人，复制整个 `data` 目录；仅有本地一份副本时，磁盘损坏仍可能丢失数据。
 
-## 开机运行
+## 可选：整台机器登录后自启动
+
+这是原有机器人/NapCat 的开机方式，仅在需要自动启动整套收集服务时选用。正常手动启动机器人即可运行全部后台后处理。
 
 关闭 Windows 接通电源时的自动睡眠。用任务计划程序新建一个登录触发的任务，程序为 `powershell.exe`，参数为 `-NoProfile -ExecutionPolicy Bypass -File "D:\Projects\PtilopsisBot\start.ps1"`。设置“如果任务已在运行，不启动新实例”，并关闭默认的运行时长限制。NapCat 也要设置启动并保持 QQ 登录；先分别手动跑通，再配置自启动。
 

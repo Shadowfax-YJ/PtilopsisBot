@@ -18,6 +18,7 @@ from nonebot.drivers.fastapi import Driver
 from .collector import SHANGHAI, Collector
 from .config import Settings
 from .napcat import NapCat
+from .plugins import PluginMaintenanceRunner
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ def run(settings: Settings) -> None:
     )
     api = NapCat(settings.group_id, http)
     collector = Collector(settings, api=api, http=http)
+    maintenance = PluginMaintenanceRunner(collector.db, settings.data_dir, settings.plugins)
     api.on_receipts_reset = collector.reset_priority
     download_wake = asyncio.Event()
     scan_wake = asyncio.Event()
@@ -116,6 +118,12 @@ def run(settings: Settings) -> None:
         except Exception as exc:
             log.warning("日报 %s 发送失败 (%s)，可使用 report 命令补发", day, type(exc).__name__)
 
+    async def plugin_once() -> bool:
+        processed = await collector.plugins.process_once()
+        if processed:
+            request_cleanup()
+        return processed
+
     async def scheduled_scan() -> None:
         nonlocal scan_pending
         scan_pending = True
@@ -151,6 +159,12 @@ def run(settings: Settings) -> None:
         collector.repair_dates()
         workers.append(asyncio.create_task(worker_loop(scan, scan_wake, "补扫")))
         workers.append(asyncio.create_task(worker_loop(cleanup, cleanup_wake, "清理")))
+        workers.append(asyncio.create_task(worker_loop(plugin_once, asyncio.Event(), "后处理插件")))
+        workers.append(
+            asyncio.create_task(
+                worker_loop(maintenance.process_once, asyncio.Event(), "插件后台处理")
+            )
+        )
         for index in range(settings.download_concurrency):
             live_only = index == 0 and settings.download_concurrency > 1
             workers.append(
@@ -245,11 +259,19 @@ def run(settings: Settings) -> None:
                 key for key, phase in collector.active.items() if phase == "cleanup"
             ),
             "records": [dict(row) for row in records[-50:]],
+            "plugins": collector.plugins.records(),
+            "plugin_maintenance": maintenance.records(),
         }
 
     @app.post("/ptilopsisbot/scan", dependencies=auth)
     async def request_scan() -> dict[str, str]:
         await scheduled_scan()
+        return {"status": "queued"}
+
+    @app.post("/ptilopsisbot/plugin-retry/{record_id}", dependencies=auth)
+    async def retry_plugins(record_id: int) -> dict[str, str]:
+        collector.plugins.retry(record_id)
+        request_cleanup()
         return {"status": "queued"}
 
     @app.post("/ptilopsisbot/retry/{record_id}", dependencies=auth)

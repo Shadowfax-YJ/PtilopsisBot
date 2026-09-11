@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import partial
+from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,7 @@ import httpx
 from . import messages
 from .config import Settings
 from .files import InvalidPackage, check_zip, download, file_check, file_matches
+from .plugins import PluginOutbox
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 log = logging.getLogger(__name__)
@@ -105,6 +107,32 @@ class Collector:
         if "time_source" not in columns:
             self.db.execute("ALTER TABLE uploads ADD COLUMN time_source TEXT NOT NULL DEFAULT 'qq'")
         self.db.commit()
+        self.db.execute("""CREATE TABLE IF NOT EXISTS archive_staging (
+            record_id INTEGER PRIMARY KEY, path TEXT NOT NULL, sha256 TEXT NOT NULL)""")
+        self.db.commit()
+        self.plugins = PluginOutbox(self.db, settings.data_dir, settings.plugins)
+        self.recover_archives()
+
+    def commit_archive(self, record_id: int, relative: str, digest: str) -> None:
+        with self.db:
+            self.db.execute("""UPDATE uploads SET status='archived',sha256=?,archive_path=?,
+                collected_at=COALESCE(collected_at,?),last_error=NULL WHERE id=?""",
+                (digest, relative, self.clock(), record_id))
+            self.plugins.enqueue(self.record(record_id))
+            self.db.execute("DELETE FROM archive_staging WHERE record_id=?", (record_id,))
+
+    def recover_archives(self) -> None:
+        root = self.settings.data_dir.resolve()
+        for stage in self.db.execute("SELECT * FROM archive_staging").fetchall():
+            row = self.record(stage['record_id'])
+            target = (root / stage['path']).resolve()
+            if not target.is_relative_to(root):
+                raise ValueError("归档恢复路径超出数据目录")
+            if file_matches(target, row['size'], stage['sha256']):
+                self.commit_archive(row['id'], stage['path'], stage['sha256'])
+        with self.db:
+            for row in self.db.execute("SELECT * FROM uploads WHERE status='archived'").fetchall():
+                self.plugins.enqueue(row)
 
     def close(self) -> None:
         self.db.close()
@@ -122,7 +150,8 @@ class Collector:
             try:
                 if relative:
                     day = datetime.fromtimestamp(observed, SHANGHAI).date()
-                    corrected = f"archive/{day}/{row['uploader_id']}/{row['id']}.zip"
+                    suffix = Path(row['name']).suffix.lower()
+                    corrected = f"archive/{day}/{row['uploader_id']}/{row['id']}{suffix}"
                     root = self.settings.data_dir.resolve()
                     old = (root / relative).resolve()
                     new = (root / corrected).resolve()
@@ -143,6 +172,8 @@ class Collector:
                            WHERE id=?""",
                         (observed, relative, row["id"]),
                     )
+                    if row['status'] == 'archived':
+                        self.plugins.enqueue(self.record(row['id']))
                 log.info("已修正上传记录 %s 的缺失日期，按已知发现日期归档", row["id"])
             except (OSError, ValueError) as exc:
                 log.error("上传记录 %s 日期修正失败: %s", row["id"], exc)
@@ -205,11 +236,15 @@ class Collector:
             or upload.busid < 0
             or upload.uploader_id <= 0
             or not 1 <= upload.size <= self.settings.max_file_mib * 1024**2
-            or not re.fullmatch(r"run-\d{8}-\d{6}-\d{6}\.zip", upload.name)
+            or any(char in upload.name for char in '/\\\0:')
+            or upload.name in {'.', '..'}
+            or not re.fullmatch(self.settings.file_policy.name_pattern, upload.name)
         ):
             return None
         try:
-            run_time = datetime.strptime(upload.name, "run-%Y%m%d-%H%M%S-%f.zip")
+            run_time = (datetime.strptime(upload.name, self.settings.file_policy.time_format)
+                        if self.settings.file_policy.time_format else
+                        datetime.fromtimestamp(max(upload.uploaded_at, 0), SHANGHAI))
             datetime.fromtimestamp(upload.uploaded_at, SHANGHAI)
         except (ValueError, OverflowError, OSError):
             return None
@@ -331,7 +366,8 @@ class Collector:
             )
             checked_at = time.perf_counter()
             log.info("上传记录 %s 开始 ZIP 检查", record_id)
-            await file_check(partial(check_zip, part))
+            if self.settings.file_policy.validation == 'zip':
+                await file_check(partial(check_zip, part))
             log.info(
                 "上传记录 %s ZIP 检查通过，耗时 %.1f 秒",
                 record_id,
@@ -355,16 +391,17 @@ class Collector:
             # The scanner can update dates and nicknames while downloads run.
             row = self.record(record_id)
             day = datetime.fromtimestamp(row["uploaded_at"], SHANGHAI).date()
-            relative = f"archive/{day}/{row['uploader_id']}/{record_id}.zip"
+            suffix = Path(row['name']).suffix.lower()
+            relative = f"archive/{day}/{row['uploader_id']}/{record_id}{suffix}"
             target = self.settings.data_dir / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            part.replace(target)
             with self.db:
                 self.db.execute(
-                    """UPDATE uploads SET status='archived', sha256=?, archive_path=?,
-                       collected_at=COALESCE(collected_at,?), last_error=NULL WHERE id=?""",
-                    (digest, relative, self.clock(), record_id),
+                    "INSERT OR REPLACE INTO archive_staging VALUES (?,?,?)",
+                    (record_id, relative, digest),
                 )
+            part.replace(target)
+            self.commit_archive(record_id, relative, digest)
             log.info("已收集上传记录 %s (%s bytes)", record_id, row["size"])
             collected = True
         except InvalidPackage as exc:
@@ -451,6 +488,8 @@ class Collector:
                 continue
             row = self.record(record_id)
             if row["status"] != "archived" or row["deleted_at"] is not None:
+                continue
+            if not self.plugins.cleanup_ready(record_id):
                 continue
             self.active[record_id] = "cleanup"
             try:
