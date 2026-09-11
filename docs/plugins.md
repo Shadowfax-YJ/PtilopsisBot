@@ -13,13 +13,17 @@
 
 归档插件配置无 maintenance 时保持原配置摘要，已有交接回执继续有效。领域插件负责决定后台批次执行哪些工作，通用宿主不理解 OCR、快照或游戏字段。
 
-请求包含 protocol_version=1、plugin_id/version、event_id、invocation_id、Unix 秒 deadline、hook=archive.committed、state_dir、input（archive_id/root/path/original_name/archive_relative_path/size/sha256）。`original_name` 来自收件记录，`path` 是宿主归档位置，`archive_relative_path` 是相对于宿主 archive 根的原路径，例如 `2026-09-09/123456789/735.zip`。插件保留来源目录和编号文件名，并把上传原名另作元数据。旧协议请求允许缺少两个新增字段。启动时补全历史请求，缺少任一字段的已完成事件也重新投递一次；更新后再次重启不会重复投递。宿主不把令牌或带签名下载 URL 传给插件。
+请求包含 protocol_version=1、plugin_id/version、event_id、invocation_id、Unix 秒 deadline、hook=archive.committed、state_dir、input（archive_id/root/path/original_name/archive_relative_path/retained_locally/size/sha256）。`original_name` 来自收件记录，`path` 是宿主归档位置，`archive_relative_path` 是相对于宿主 archive 根的原路径，例如 `2026-09-09/123456789/735.zip`。插件保留来源目录和编号文件名，并把上传原名另作元数据。旧协议请求允许缺少新增字段。启动时补全历史请求；input 有变化时重新投递一次，包括新增元数据、保留承诺或迁移后的本地路径。输入不变的再次重启不会重复投递。宿主不把令牌或带签名下载 URL 传给插件。
+
+`retained_locally=true` 承诺宿主在数据使用期间长期保留该 archive 文件。插件可以核对后持久化引用并直接读取，无需复制或创建第二套硬链接。现有自动清理仅删除群文件，本地 archive 继续保留；将来新增本地归档清理能力时必须先处理依赖引用，不能继续无条件发送该承诺。未声明此字段的旧宿主没有给出保留保证，插件可沿用独立冻结副本的策略。此字段是通用存储生命周期契约，业务去重、旧副本核对清理和原件索引仍由插件负责。
 
 stdout 仍只返回最终 JSON。插件可在 stderr 输出以 `PLUGIN_PROGRESS ` 开头的一行 JSON，内容为 `{event_id: 本次请求 ID, message: 可读进度}`，每条立即 flush。宿主增量读取并显示在机器人原有运行窗口/日志；原样忽略其他诊断、格式错误或不同 event_id 的进度行，过滤控制字符并限制显示长度。响应必须原样返回 protocol_version 与 event_id，以及 ok/retry/unsupported/rejected；每个输出流总计仍最多 1 MiB。无需扩展的插件继续使用原协议，具体工作阶段与计数含义由业务插件提供。
 
+启动时显示后台任务是否启用。后台子进程 15 秒没有有效阶段进度时，宿主输出运行耗时；插件恢复阶段输出后不追加这类提示。后台成功结果也会显示，连续相同结果去重；失败立即显示。历史交接成功每 5 秒或队列暂时清空时汇总，逐条回执保存在原数据库，详细成功消息为 DEBUG。响应可提供 warnings 字符串数组，宿主最多显示 10 条、每条 2000 字符；它只展示警告，不解释业务字段。缺失 maintenance 的显式配置会得到明确提示，继续保留用户原有配置和路径。
+
 归档提交与插件事件在同一 SQLite 事务登记；`archive_staging` 恢复文件 rename 后中断的窗口。重启补投，使用事件与配置摘要去重。retry 自动退避，unsupported/rejected 等待人工处理；`ptilopsisbot plugin-retry RECORD_ID` 仅重试后处理。`status` 同时显示下载记录和独立插件状态。
 
-required_for_cleanup=true 时必须收到当前归档摘要、当前插件配置对应的 ok + receipt.durable=true。它只表示插件承诺已持久化接收，不代表业务分析有效；原有宽限期、本地/远端哈希核验仍需通过。等待插件不会占用下载名额。
+required_for_cleanup=true 时必须收到当前归档摘要、当前插件配置对应的 ok + receipt.durable=true。它只表示插件承诺已持久化接收，不代表业务分析有效；对于长期保留的宿主原件，核验并持久登记引用即可，不要求另存一份文件。原有宽限期、本地/远端哈希核验仍需通过。等待插件不会占用下载名额。
 
 通用文件策略可在 TOML 设置 `[file_policy]`、`name_pattern = '.*\.dat'`、`time_format = ""`、`validation = "bytes"`。默认仍匹配 run ZIP；ZIP/bytes 是宿主基础策略，具体领域校验交给插件。
 

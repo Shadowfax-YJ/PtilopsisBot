@@ -15,6 +15,7 @@ from .config import PluginCommand, PluginConfig
 
 log = logging.getLogger(__name__)
 PROGRESS_PREFIX = b"PLUGIN_PROGRESS "
+PROGRESS_HEARTBEAT_SECONDS = 15
 
 
 def fingerprint(config: PluginConfig) -> str:
@@ -34,6 +35,9 @@ class PluginOutbox:
     def __init__(self, db: sqlite3.Connection, root: Path, configs: list[PluginConfig]) -> None:
         self.db, self.root, self.configs = db, root.resolve(), configs
         self.lock = asyncio.Lock()
+        self.receipt_counts: dict[str, int] = {}
+        self.receipt_totals: dict[str, int] = {}
+        self.receipt_last_log: dict[str, float] = {}
         db.execute("""CREATE TABLE IF NOT EXISTS plugin_events (
             key TEXT PRIMARY KEY, record_id INTEGER NOT NULL, plugin_id TEXT NOT NULL,
             config_hash TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
@@ -62,6 +66,7 @@ class PluginOutbox:
                     "archive_relative_path": (
                         Path(row["archive_path"]).relative_to("archive").as_posix()
                     ),
+                    "retained_locally": True,
                     "size": row["size"],
                     "sha256": row["sha256"],
                 },
@@ -70,12 +75,12 @@ class PluginOutbox:
                 """INSERT INTO plugin_events
                 (key,record_id,plugin_id,config_hash,request) VALUES (?,?,?,?,?)
                 ON CONFLICT(key) DO UPDATE SET request=excluded.request,
-                status=CASE WHEN json_extract(plugin_events.request,'$.input.original_name')
-                    IS NULL OR json_extract(plugin_events.request,'$.input.archive_relative_path')
-                    IS NULL THEN 'queued' ELSE plugin_events.status END,
-                next_attempt=CASE WHEN json_extract(plugin_events.request,'$.input.original_name')
-                    IS NULL OR json_extract(plugin_events.request,'$.input.archive_relative_path')
-                    IS NULL THEN 0 ELSE plugin_events.next_attempt END""",
+                status=CASE WHEN json_extract(plugin_events.request,'$.input')
+                    IS NOT json_extract(excluded.request,'$.input')
+                    THEN 'queued' ELSE plugin_events.status END,
+                next_attempt=CASE WHEN json_extract(plugin_events.request,'$.input')
+                    IS NOT json_extract(excluded.request,'$.input')
+                    THEN 0 ELSE plugin_events.next_attempt END""",
                 (key, row["id"], config.id, digest, json.dumps(request)),
             )
 
@@ -130,6 +135,8 @@ class PluginOutbox:
                 None,
             )
             if row is None:
+                for config in self.configs:
+                    self.log_receipts(config, force=True)
                 return False
             config = allowed[row["config_hash"]]
             request = json.loads(row["request"])
@@ -165,11 +172,38 @@ class PluginOutbox:
                         row["key"],
                     ),
                 )
-            log.info("[%s] 原包交接 %s：%s；%s", config.id,
-                     request["input"].get("original_name", request["input"]["path"]),
-                     result["status"],
-                     result.get("message", ""))
+            if result["status"] == "ok":
+                self.receipt_counts[config.id] = self.receipt_counts.get(config.id, 0) + 1
+                self.receipt_totals[config.id] = self.receipt_totals.get(config.id, 0) + 1
+                self.log_receipts(config)
+                log.debug("[%s] 原包交接 %s：%s", config.id,
+                          request["input"]["path"], result.get("message", "ok"))
+                warnings = result.get("warnings", [])
+                if isinstance(warnings, list):
+                    for warning in warnings[:10]:
+                        if isinstance(warning, str):
+                            log.warning("[%s] %s", config.id, warning[:2000])
+            else:
+                log.warning("[%s] 原包交接 %s：%s；%s", config.id,
+                            request["input"]["path"], result["status"], result.get("message", ""))
             return True
+
+    def log_receipts(self, config: PluginConfig, *, force: bool = False) -> None:
+        count = self.receipt_counts.get(config.id, 0)
+        now = time.monotonic()
+        if not count or (not force and now - self.receipt_last_log.get(config.id, now) < 5):
+            self.receipt_last_log.setdefault(config.id, now)
+            return
+        pending = self.db.execute(
+            "SELECT count(*) FROM plugin_events WHERE config_hash=? "
+            "AND status IN ('queued','retry','running')",
+            (fingerprint(config),),
+        ).fetchone()[0]
+        log.info("[%s] 交接汇总：新增成功 %s 个，本次启动累计 %s 个，待交接 %s 个；"
+                 "后台处理单独报告",
+                 config.id, count, self.receipt_totals[config.id], pending)
+        self.receipt_counts[config.id] = 0
+        self.receipt_last_log[config.id] = now
 
 
 class PluginMaintenanceRunner:
@@ -179,6 +213,15 @@ class PluginMaintenanceRunner:
         self.db, self.root = db, root.resolve()
         self.configs = {fingerprint(config): config for config in configs if config.maintenance}
         self.lock = asyncio.Lock()
+        self.last_results: dict[str, tuple[str, str]] = {}
+        for config in configs:
+            if config.maintenance:
+                log.info("[%s] 后台处理已启用；配置版本 %s；每 %s 秒检查，单批超时 %s 秒",
+                         config.id, config.version, config.maintenance.interval_seconds,
+                         config.maintenance.timeout_seconds)
+            else:
+                log.warning("[%s] 当前仅配置归档交接，未启用后台处理；该插件不会自动处理积压数据",
+                            config.id)
         db.execute("""CREATE TABLE IF NOT EXISTS plugin_maintenance (
             config_hash TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, status TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
@@ -243,6 +286,8 @@ class PluginMaintenanceRunner:
                     (row["config_hash"],),
                 )
             try:
+                if row['config_hash'] not in self.last_results:
+                    log.info("[%s] 后台处理开始", config.id)
                 result = await invoke(command, request)
             except asyncio.CancelledError:
                 with self.db:
@@ -267,6 +312,10 @@ class PluginMaintenanceRunner:
             if result["status"] != "ok":
                 log.warning("[%s] 后台任务 %s：%s", config.id, result["status"],
                             result.get("message", ""))
+            summary = (result['status'], str(result.get('message', '')))
+            if result['status'] == 'ok' and self.last_results.get(row['config_hash']) != summary:
+                log.info("[%s] 后台处理结果：%s；%s", config.id, *summary)
+            self.last_results[row['config_hash']] = summary
             return True
 
 
@@ -299,8 +348,10 @@ async def invoke(config: PluginCommand, request: dict[str, Any]) -> dict[str, An
             creationflags=0x08000000 if os.name == "nt" else 0,
         )
         assert process.stdin and process.stdout and process.stderr
+        started = last_progress = time.monotonic()
 
         async def bounded(stream: asyncio.StreamReader, *, progress: bool = False) -> bytes:
+            nonlocal last_progress
             data = bytearray()
             pending = bytearray()
             while chunk := await stream.read(65536):
@@ -324,7 +375,15 @@ async def invoke(config: PluginCommand, request: dict[str, Any]) -> dict[str, An
                             message = "".join(c if c.isprintable() else " "
                                               for c in value["message"])[:2000]
                             log.info("[%s] %s", request.get("plugin_id", "plugin"), message)
+                            last_progress = time.monotonic()
             return bytes(data)
+
+        async def heartbeat() -> None:
+            while True:
+                await asyncio.sleep(PROGRESS_HEARTBEAT_SECONDS)
+                if time.monotonic() - last_progress >= PROGRESS_HEARTBEAT_SECONDS:
+                    log.info("[%s] 后台处理仍在运行，已耗时 %s 秒；等待插件报告阶段进度",
+                             request.get('plugin_id', 'plugin'), int(time.monotonic() - started))
 
         async def communicate() -> bytes:
             assert process and process.stdin and process.stdout and process.stderr
@@ -333,9 +392,14 @@ async def invoke(config: PluginCommand, request: dict[str, Any]) -> dict[str, An
             process.stdin.close()
             readers = [asyncio.create_task(bounded(process.stdout)),
                        asyncio.create_task(bounded(process.stderr, progress=True))]
+            pulse = (asyncio.create_task(heartbeat())
+                     if request.get('hook') == 'maintenance.tick' else None)
             try:
                 stdout, _ = await asyncio.gather(*readers)
             finally:
+                if pulse:
+                    pulse.cancel()
+                    await asyncio.gather(pulse, return_exceptions=True)
                 for reader in readers:
                     reader.cancel()
                 await asyncio.gather(*readers, return_exceptions=True)
