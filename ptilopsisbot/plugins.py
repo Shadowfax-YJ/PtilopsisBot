@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -11,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from .config import PluginCommand, PluginConfig
+
+log = logging.getLogger(__name__)
+PROGRESS_PREFIX = b"PLUGIN_PROGRESS "
 
 
 def fingerprint(config: PluginConfig) -> str:
@@ -54,6 +58,10 @@ class PluginOutbox:
                     "archive_id": str(row["id"]),
                     "root": str(self.root),
                     "path": row["archive_path"],
+                    "original_name": row["name"],
+                    "archive_relative_path": (
+                        Path(row["archive_path"]).relative_to("archive").as_posix()
+                    ),
                     "size": row["size"],
                     "sha256": row["sha256"],
                 },
@@ -61,7 +69,13 @@ class PluginOutbox:
             self.db.execute(
                 """INSERT INTO plugin_events
                 (key,record_id,plugin_id,config_hash,request) VALUES (?,?,?,?,?)
-                ON CONFLICT(key) DO UPDATE SET request=excluded.request""",
+                ON CONFLICT(key) DO UPDATE SET request=excluded.request,
+                status=CASE WHEN json_extract(plugin_events.request,'$.input.original_name')
+                    IS NULL OR json_extract(plugin_events.request,'$.input.archive_relative_path')
+                    IS NULL THEN 'queued' ELSE plugin_events.status END,
+                next_attempt=CASE WHEN json_extract(plugin_events.request,'$.input.original_name')
+                    IS NULL OR json_extract(plugin_events.request,'$.input.archive_relative_path')
+                    IS NULL THEN 0 ELSE plugin_events.next_attempt END""",
                 (key, row["id"], config.id, digest, json.dumps(request)),
             )
 
@@ -151,6 +165,10 @@ class PluginOutbox:
                         row["key"],
                     ),
                 )
+            log.info("[%s] 原包交接 %s：%s；%s", config.id,
+                     request["input"].get("original_name", request["input"]["path"]),
+                     result["status"],
+                     result.get("message", ""))
             return True
 
 
@@ -246,6 +264,9 @@ class PluginMaintenanceRunner:
                         row["config_hash"],
                     ),
                 )
+            if result["status"] != "ok":
+                log.warning("[%s] 后台任务 %s：%s", config.id, result["status"],
+                            result.get("message", ""))
             return True
 
 
@@ -279,12 +300,30 @@ async def invoke(config: PluginCommand, request: dict[str, Any]) -> dict[str, An
         )
         assert process.stdin and process.stdout and process.stderr
 
-        async def bounded(stream: asyncio.StreamReader) -> bytes:
+        async def bounded(stream: asyncio.StreamReader, *, progress: bool = False) -> bytes:
             data = bytearray()
+            pending = bytearray()
             while chunk := await stream.read(65536):
                 data.extend(chunk)
                 if len(data) > 1024 * 1024:
                     raise ValueError("plugin output exceeds 1 MiB")
+                if progress:
+                    pending.extend(chunk)
+                    while b"\n" in pending:
+                        line, _, rest = pending.partition(b"\n")
+                        pending = bytearray(rest)
+                        if not line.startswith(PROGRESS_PREFIX):
+                            continue
+                        try:
+                            value = json.loads(line[len(PROGRESS_PREFIX):])
+                        except (ValueError, UnicodeError):
+                            continue
+                        if (isinstance(value, dict) and value.get("event_id") == request["event_id"]
+                                and isinstance(value.get("message"), str)):
+                            # One bounded, plain log line; no terminal control sequences.
+                            message = "".join(c if c.isprintable() else " "
+                                              for c in value["message"])[:2000]
+                            log.info("[%s] %s", request.get("plugin_id", "plugin"), message)
             return bytes(data)
 
         async def communicate() -> bytes:
@@ -292,9 +331,8 @@ async def invoke(config: PluginCommand, request: dict[str, Any]) -> dict[str, An
             process.stdin.write(json.dumps(request).encode() + b"\n")
             await process.stdin.drain()
             process.stdin.close()
-            readers = [
-                asyncio.create_task(bounded(stream)) for stream in (process.stdout, process.stderr)
-            ]
+            readers = [asyncio.create_task(bounded(process.stdout)),
+                       asyncio.create_task(bounded(process.stderr, progress=True))]
             try:
                 stdout, _ = await asyncio.gather(*readers)
             finally:

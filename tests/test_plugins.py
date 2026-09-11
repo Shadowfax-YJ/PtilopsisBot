@@ -1,4 +1,7 @@
+import asyncio
 import hashlib
+import json
+import logging
 import sys
 from pathlib import Path
 
@@ -63,6 +66,59 @@ async def test_crash_after_rename_recovers_and_deduplicates_outbox(tmp_path: Pat
         collector.db.execute("UPDATE uploads SET sha256=? WHERE id=?", ("0" * 64, record))
     assert not collector.plugins.cleanup_ready(record)
     collector.close()
+
+
+@pytest.mark.parametrize('missing', ['original_name', 'archive_relative_path'])
+async def test_original_metadata_backfills_completed_legacy_event_once(tmp_path, missing):
+    cfg = settings(tmp_path, plugin(tmp_path))
+    collector = Collector(cfg)
+    try:
+        stage(collector)
+        collector.recover_archives()
+        assert await collector.plugins.process_once()
+        row = collector.db.execute('SELECT * FROM plugin_events').fetchone()
+        request = json.loads(row['request'])
+        assert request['input']['original_name'] == 'run-20260911-110000-123456.zip'
+        assert request['input']['archive_relative_path'] == 'fixture.zip'
+        request['input'].pop(missing)
+        with collector.db:
+            collector.db.execute('UPDATE plugin_events SET request=?', (json.dumps(request),))
+        collector.recover_archives()
+        assert await collector.plugins.process_once()
+        collector.recover_archives()
+        assert not await collector.plugins.process_once()
+        assert len(collector.plugins.records()) == 1
+    finally:
+        collector.close()
+
+
+async def test_progress_logs_before_plugin_exits_without_polluting_response(tmp_path, caplog):
+    release = tmp_path / 'release'
+    script = tmp_path / 'progress.py'
+    script.write_text(
+        'import json,sys,time\nfrom pathlib import Path\nr=json.load(sys.stdin)\n'
+        'print("PLUGIN_PROGRESS broken",file=sys.stderr,flush=True)\n'
+        'print("PLUGIN_PROGRESS "+json.dumps({"event_id":"wrong","message":"ignore"}),'
+        'file=sys.stderr,flush=True)\n'
+        'print("PLUGIN_PROGRESS "+json.dumps({"event_id":r["event_id"],'
+        '"message":"OCR 3/10\\u001b"}),'
+        'file=sys.stderr,flush=True)\n'
+        f'while not Path({str(release)!r}).exists(): time.sleep(.01)\n'
+        'print(json.dumps({"protocol_version":1,"event_id":r["event_id"],"status":"ok"}))\n',
+        encoding='utf-8')
+    cfg = PluginConfig(id='progress', version='1', command=[sys.executable, str(script)])
+    caplog.set_level(logging.INFO)
+    task = asyncio.create_task(invoke(cfg, {'event_id': 'event', 'plugin_id': 'progress'}))
+    try:
+        async with asyncio.timeout(5):
+            while 'OCR 3/10' not in caplog.text:
+                await asyncio.sleep(.01)
+        assert not task.done()
+        assert 'ignore' not in caplog.text and '\x1b' not in caplog.text
+    finally:
+        release.touch()
+        result = await task
+    assert result['status'] == 'ok'
 
 
 async def test_unsupported_retry_and_missing_program_are_separate_from_download(
