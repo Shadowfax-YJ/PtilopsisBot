@@ -68,7 +68,7 @@ async def test_crash_after_rename_recovers_and_deduplicates_outbox(tmp_path: Pat
     collector.close()
 
 
-@pytest.mark.parametrize('missing', ['original_name', 'archive_relative_path'])
+@pytest.mark.parametrize('missing', ['original_name', 'archive_relative_path', 'retained_locally'])
 async def test_original_metadata_backfills_completed_legacy_event_once(tmp_path, missing):
     cfg = settings(tmp_path, plugin(tmp_path))
     collector = Collector(cfg)
@@ -88,6 +88,26 @@ async def test_original_metadata_backfills_completed_legacy_event_once(tmp_path,
         collector.recover_archives()
         assert not await collector.plugins.process_once()
         assert len(collector.plugins.records()) == 1
+    finally:
+        collector.close()
+
+
+async def test_retained_archive_location_change_replays_receipt_once(tmp_path):
+    cfg = settings(tmp_path, plugin(tmp_path))
+    collector = Collector(cfg)
+    try:
+        stage(collector)
+        collector.recover_archives()
+        assert await collector.plugins.process_once()
+        row = collector.db.execute('SELECT * FROM plugin_events').fetchone()
+        request = json.loads(row['request'])
+        request['input']['root'] = str(tmp_path / 'previous-computer-location')
+        with collector.db:
+            collector.db.execute('UPDATE plugin_events SET request=?', (json.dumps(request),))
+        collector.recover_archives()
+        assert await collector.plugins.process_once()
+        collector.recover_archives()
+        assert not await collector.plugins.process_once()
     finally:
         collector.close()
 
