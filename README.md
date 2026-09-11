@@ -23,7 +23,7 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-收集 BlackFlow 并自动后处理时，同一次环境安装使用 `pip install -e '.[blackflow]'`，会带上固定版本的 analysis 业务插件与 OCR。照常启动机器人，即自动验证、补识别并发布到实际 data_dir 下的 `blackflow/published`；夸克备份选择该目录。基础安装仍供其他收集场景使用。后处理无需额外安装器、独立进程或 Windows 任务。
+收集 BlackFlow 并自动后处理时，同一次环境安装使用 `pip install -e '.[blackflow]'`，会带上固定版本的 analysis 业务插件与 OCR。照常启动机器人，即持续验证、补识别，每天北京时间 00:05 将截至前一日入库的数据发布到实际 data_dir 下的 `blackflow/published`，版本按实际发布时间 YYYYMMDD-HHMMSS 命名；夸克备份选择该目录。基础安装仍供其他收集场景使用。后处理无需额外安装器、独立进程或 Windows 任务。
 
 首次配置时，将 `config.toml` 中的 `group_id = 0` 替换为自己的目标 QQ 群号，再把生成的随机值填进 `access_token`。示例中的 0 是占位值，未填写真实群号时不能启动。已有配置保留原值即可。配置和数据目录不会提交到 Git：换电脑需单独带上 `config.toml`；已经收集过数据时先停止旧进程，再完整复制 `data` 目录。新电脑重新建立 `.venv`，不要复制旧虚拟环境；数据目录换位置时同步修改配置里的 `data_dir`。
 
