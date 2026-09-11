@@ -26,3 +26,13 @@ cleanup_concurrency = 3
 # Group-wide usage including subfolders; omit to disable capacity cleanup.
 # When exceeded, oldest archived packages can be deleted before their retention expires.
 group_storage_limit_gib = 8
+
+# Optional trusted local command plugins; paths are relative to this config file.
+# Installed Python plugin packages are discovered automatically; JSON is an optional override.
+# Neither commands nor plugins are discovered in uploads.
+# disabled_plugins = ["example-plugin"]
+plugin_configs = []
+
+# Default policy preserves run-YYYYMMDD-HHMMSS-ffffff.zip behavior.
+# For generic files, configure name_pattern, time_format = "", and validation = "bytes".
+# See docs/plugins.md for TOML examples.
