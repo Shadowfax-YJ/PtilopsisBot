@@ -184,9 +184,12 @@ def test_general_file_policy_and_disabled_plugin_baseline(tmp_path: Path) -> Non
     collector.close()
 
 
-def test_installed_json_config_loads_relative_to_toml(tmp_path: Path) -> None:
+def test_installed_json_config_loads_relative_to_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import json
 
+    monkeypatch.setattr("ptilopsisbot.config.entry_points", lambda **kwargs: [])
     cfg = plugin(tmp_path)
     (tmp_path / "plugin.json").write_text(json.dumps(cfg.model_dump()), encoding="utf-8")
     config = tmp_path / "config.toml"
