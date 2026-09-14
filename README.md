@@ -29,6 +29,8 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 
 原包继续只保存在已有 `archive/日期/QQ/编号.zip`，BlackFlow 插件核对后直接引用。更新代码和原环境依赖并重启后，已登记的旧 raw 副本会在核对原件、切换引用后清理；无法核对的保留并显示原因。已有 archive 备份及订阅继续使用。
 
+0.4.2 的中心修订接收器沿用现有两个夸克自动备份目录，在原 maintenance 中只读下载已批准修订到备份根之外。原 archive 和收件回执保持原始字节，避免备份上传、重启补投与修订下载循环；无需在中心开启夸克文件下载同步。升级后还须按[中心修订接收配置](https://github.com/Landmark-Achiever/lubiao-analysis/blob/main/docs/data-pipeline/central-revisions.md)填写实际路径、固定批准清单并在中心扫码授权。安装代码不会自动启用或扩大已批准范围。
+
 首次配置时，将 `config.toml` 中的 `group_id = 0` 替换为自己的目标 QQ 群号，再把生成的随机值填进 `access_token`。示例中的 0 是占位值，未填写真实群号时不能启动。已有配置保留原值即可。配置和数据目录不会提交到 Git：换电脑需单独带上 `config.toml`；已经收集过数据时先停止旧进程，再完整复制 `data` 目录。新电脑重新建立 `.venv`，不要复制旧虚拟环境；数据目录换位置时同步修改配置里的 `data_dir`。
 
 1. 从 [NapCat 官方发布页](https://github.com/NapNeko/NapCatQQ/releases)选择适合 Windows x64 的安装包，按照[官方配置说明](https://napneko.github.io/config/basic)完成安装和 QQ 登录。NapCat 放在独立目录，例如 `D:\Bots\NapCat`；版本兼容限制见下文。
