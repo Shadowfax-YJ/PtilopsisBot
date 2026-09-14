@@ -15,7 +15,7 @@ from .config import PluginCommand, PluginConfig
 
 log = logging.getLogger(__name__)
 PROGRESS_PREFIX = b"PLUGIN_PROGRESS "
-PROGRESS_HEARTBEAT_SECONDS = 15
+PROGRESS_HEARTBEAT_SECONDS = 60
 
 
 def fingerprint(config: PluginConfig) -> str:

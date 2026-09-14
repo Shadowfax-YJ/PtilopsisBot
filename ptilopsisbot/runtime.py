@@ -119,7 +119,7 @@ def run(settings: Settings) -> None:
             cleanup_pending = True
             raise
         next_cleanup_check = collector.clock() + 60
-        log.info("本轮群文件清理检查结束")
+        log.debug("本轮群文件清理检查结束")
         return False
 
     async def daily_report() -> None:
