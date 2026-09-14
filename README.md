@@ -23,7 +23,9 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-收集 BlackFlow 并自动后处理时，同一次环境安装使用 `pip install -e '.[blackflow]'`，会带上固定版本的 analysis 业务插件与 OCR。照常启动机器人，即持续验证、补识别，每天北京时间 00:05 将截至前一日入库的数据发布到实际 data_dir 下的 `blackflow/published`，版本按实际发布时间 YYYYMMDD-HHMMSS 命名；夸克备份选择该目录。基础安装仍供其他收集场景使用。后处理无需额外安装器、独立进程或 Windows 任务。
+收集 BlackFlow 并自动后处理时，同一次环境安装使用 `pip install -e '.[blackflow]'`，会带上固定版本的 analysis 业务插件与 OCR。照常启动机器人，即持续验证、补识别，每天北京时间 00:05 将截至前一日入库的数据发布到实际 data_dir 下的 `blackflow/published`，版本按实际发布时间 YYYYMMDD-HHMMSS 命名。插件同时生成同级 `blackflow/published-packed`，夸克备份选择这个分卷目录，以减少大量小文件的上传开销；本地 `published` 保留。基础安装仍供其他收集场景使用。后处理无需额外安装器、独立进程或 Windows 任务。
+
+分析端使用 lubiao-pipeline 0.3.16 或更新版本，原来的分析命令将 `--root` 指向同步下来的分卷目录即可，工具在本机缓存中自动校验和展开。已有云端目录不会自动删除或替换，切换备份和订阅时选择新的分卷目录。
 
 原包继续只保存在已有 `archive/日期/QQ/编号.zip`，BlackFlow 插件核对后直接引用。更新代码和原环境依赖并重启后，已登记的旧 raw 副本会在核对原件、切换引用后清理；无法核对的保留并显示原因。已有 archive 备份及订阅继续使用。
 
