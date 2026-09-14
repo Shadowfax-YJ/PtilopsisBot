@@ -50,6 +50,7 @@ class Settings(BaseModel):
 
     group_id: int = Field(gt=0)
     data_dir: Path = Path("data")
+    archive_data_dir: Path | None = None
     access_token: SecretStr = SecretStr("")
     port: int = Field(default=8080, ge=1, le=65535)
     auto_delete: bool = True
@@ -90,6 +91,10 @@ def load_settings(path: Path) -> Settings:
     if not settings.access_token.get_secret_value().strip():
         raise ValueError("请在配置中填写 access_token，并在 NapCat 的反向 WS 中使用同一个值")
     data_dir = (path.resolve().parent / settings.data_dir).resolve()
+    archive_data_dir = (
+        (path.resolve().parent / settings.archive_data_dir).resolve()
+        if settings.archive_data_dir is not None else None
+    )
     disabled = set(settings.disabled_plugins)
     configured = {plugin.id for plugin in plugins}
     discovered: set[str] = set()
@@ -112,6 +117,7 @@ def load_settings(path: Path) -> Settings:
         {
             **settings.model_dump(),
             "data_dir": data_dir,
+            "archive_data_dir": archive_data_dir,
             "plugins": [plugin for plugin in plugins if plugin.id not in disabled],
         }
     )

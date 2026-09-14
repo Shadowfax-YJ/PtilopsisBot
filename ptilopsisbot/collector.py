@@ -99,6 +99,9 @@ class Collector:
         self.group_storage_bytes: int | None = None
         self.storage_checked_at: float | None = None
         self.storage_cleanup_error: str | None = None
+        self.archive_root = (settings.archive_data_dir or settings.data_dir).resolve()
+        if settings.archive_data_dir is not None and not self.archive_root.is_dir():
+            raise OSError(f"归档磁盘目录不可用：{self.archive_root}")
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(settings.data_dir / "collector.sqlite3", timeout=5)
         self.db.row_factory = sqlite3.Row
@@ -165,7 +168,9 @@ class Collector:
         self.db.execute("""CREATE TABLE IF NOT EXISTS archive_staging (
             record_id INTEGER PRIMARY KEY, path TEXT NOT NULL, sha256 TEXT NOT NULL)""")
         self.db.commit()
-        self.plugins = PluginOutbox(self.db, settings.data_dir, settings.plugins)
+        self.plugins = PluginOutbox(
+            self.db, settings.data_dir, settings.plugins, archive_root=self.archive_root,
+        )
         self.recover_archives()
 
     def commit_archive(self, record_id: int, relative: str, digest: str) -> None:
@@ -177,7 +182,7 @@ class Collector:
             self.db.execute("DELETE FROM archive_staging WHERE record_id=?", (record_id,))
 
     def recover_archives(self) -> None:
-        root = self.settings.data_dir.resolve()
+        root = self.archive_root
         for stage in self.db.execute("SELECT * FROM archive_staging").fetchall():
             row = self.record(stage['record_id'])
             target = (root / stage['path']).resolve()
@@ -241,7 +246,7 @@ class Collector:
                     day = datetime.fromtimestamp(observed, SHANGHAI).date()
                     suffix = Path(row['name']).suffix.lower()
                     corrected = f"archive/{day}/{row['uploader_id']}/{row['id']}{suffix}"
-                    root = self.settings.data_dir.resolve()
+                    root = self.archive_root
                     old = (root / relative).resolve()
                     new = (root / corrected).resolve()
                     if not old.is_relative_to(root) or not new.is_relative_to(root):
@@ -430,8 +435,9 @@ class Collector:
     def can_work(self) -> bool:
         if self.api is None or not self.api.online:
             return False
-        if shutil.disk_usage(self.settings.data_dir).free < self.settings.min_free_gib * 1024**3:
-            raise OSError("本地剩余空间不足，暂停下载和删源")
+        for root in {self.settings.data_dir.resolve(), self.archive_root}:
+            if shutil.disk_usage(root).free < self.settings.min_free_gib * 1024**3:
+                raise OSError("工作盘或归档盘剩余空间不足，暂停下载和删源")
         # Exercise an actual write before any destructive remote operation.
         with self.db:
             self.db.execute("UPDATE uploads SET id=id WHERE id=-1")
@@ -478,7 +484,7 @@ class Collector:
         assert self.api is not None and self.http is not None
         record_id = row["id"]
         previous_attempts = row["attempts"]
-        incoming = self.settings.data_dir / "incoming"
+        incoming = self.archive_root / "incoming"
         incoming.mkdir(exist_ok=True)
         part = incoming / f"{record_id}.part"
         with self.db:
@@ -526,7 +532,7 @@ class Collector:
             day = datetime.fromtimestamp(row["uploaded_at"], SHANGHAI).date()
             suffix = Path(row['name']).suffix.lower()
             relative = f"archive/{day}/{row['uploader_id']}/{record_id}{suffix}"
-            target = self.settings.data_dir / relative
+            target = self.archive_root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             with self.db:
                 self.db.execute(
@@ -742,7 +748,7 @@ class Collector:
         assert self.api is not None
         self.active[record_id] = "cleanup"
         try:
-            path = self.settings.data_dir / row["archive_path"]
+            path = self.archive_root / row["archive_path"]
             checked_at = time.perf_counter()
             log.info("上传记录 %s 开始删源前本地归档校验", row["id"])
             if not await file_check(partial(file_matches, path, row["size"], row["sha256"])):

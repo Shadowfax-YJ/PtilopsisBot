@@ -32,8 +32,12 @@ def fingerprint(config: PluginConfig) -> str:
 
 
 class PluginOutbox:
-    def __init__(self, db: sqlite3.Connection, root: Path, configs: list[PluginConfig]) -> None:
+    def __init__(
+        self, db: sqlite3.Connection, root: Path, configs: list[PluginConfig],
+        *, archive_root: Path | None = None,
+    ) -> None:
         self.db, self.root, self.configs = db, root.resolve(), configs
+        self.archive_root = (archive_root if archive_root is not None else root).resolve()
         self.lock = asyncio.Lock()
         self.receipt_counts: dict[str, int] = {}
         self.receipt_totals: dict[str, int] = {}
@@ -60,7 +64,7 @@ class PluginOutbox:
                 "hook": "archive.committed",
                 "input": {
                     "archive_id": str(row["id"]),
-                    "root": str(self.root),
+                    "root": str(self.archive_root),
                     "path": row["archive_path"],
                     "original_name": row["name"],
                     "archive_relative_path": (

@@ -4,6 +4,9 @@ group_id = 0
 access_token = ""
 port = 8080
 data_dir = "data"
+# Optional separate disk for archive/ and incoming/; the directory must already exist.
+# Database, logs and analysis work stay in data_dir. Existing archives need a verified migration.
+# archive_data_dir = "E:/PtilopsisBot"
 
 # Group cleanup is part of the core workflow. Use false only to pause it.
 auto_delete = true

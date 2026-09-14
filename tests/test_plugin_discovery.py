@@ -38,6 +38,21 @@ def test_installed_provider_receives_only_resolved_directory_and_protocol(tmp_pa
     assert len(list(tmp_path.iterdir())) == 1
 
 
+def test_archive_disk_setting_does_not_move_plugin_work_directory(tmp_path, monkeypatch):
+    calls = []
+
+    def provider(context):
+        calls.append(context)
+        return {"id": "example", "version": "1", "command": [sys.executable]}
+
+    monkeypatch.setattr(config, "entry_points", lambda **kw: [entry("example", provider)])
+    path = settings_file(tmp_path, 'archive_data_dir="../cold-storage"\n')
+    loaded = config.load_settings(path)
+    assert loaded.archive_data_dir == (tmp_path.parent / "cold-storage").resolve()
+    assert loaded.data_dir == (tmp_path / "custom-data").resolve()
+    assert calls == [{"protocol_version": 1, "data_dir": str(loaded.data_dir)}]
+
+
 def test_disabled_or_explicit_plugin_never_loads_installed_provider(tmp_path, monkeypatch):
     def broken(_):
         raise AssertionError("This provider must not be loaded")

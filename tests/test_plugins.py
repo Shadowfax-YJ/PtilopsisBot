@@ -112,6 +112,54 @@ async def test_retained_archive_location_change_replays_receipt_once(tmp_path):
         collector.close()
 
 
+async def test_archive_disk_migration_replays_receipt_without_moving_work_state(tmp_path):
+    cfg = settings(tmp_path, plugin(tmp_path))
+    collector = Collector(cfg)
+    record = stage(collector)
+    collector.recover_archives()
+    assert await collector.plugins.process_once()
+    key = collector.plugins.records()[0]['key']
+    collector.close()
+    cold = tmp_path / 'cold'
+    cold.mkdir()
+    (cfg.data_dir / 'archive').rename(cold / 'archive')
+    moved = cfg.model_copy(update={'archive_data_dir': cold})
+    collector = Collector(moved)
+    try:
+        event = collector.db.execute('SELECT * FROM plugin_events').fetchone()
+        request = json.loads(event['request'])
+        assert event['key'] == key
+        assert request['input']['root'] == str(cold.resolve())
+        assert request['input']['path'] == 'archive/fixture.zip'
+        assert not collector.plugins.cleanup_ready(record)
+        assert await collector.plugins.process_once()
+        assert collector.plugins.cleanup_ready(record)
+        assert (cfg.data_dir / 'plugin-state/test').is_dir()
+        assert not (cold / 'plugin-state').exists()
+        collector.recover_archives()
+        assert not await collector.plugins.process_once()
+    finally:
+        collector.close()
+
+
+def test_archive_crash_recovery_uses_external_disk(tmp_path):
+    cfg = settings(tmp_path, plugin(tmp_path))
+    cold = tmp_path / 'cold'
+    cold.mkdir()
+    collector = Collector(cfg)
+    record = stage(collector)
+    collector.close()
+    (cfg.data_dir / 'archive').rename(cold / 'archive')
+    collector = Collector(cfg.model_copy(update={'archive_data_dir': cold}))
+    try:
+        assert collector.record(record)['status'] == 'archived'
+        assert collector.db.execute('SELECT COUNT(*) FROM archive_staging').fetchone()[0] == 0
+        assert (cold / collector.record(record)['archive_path']).is_file()
+        assert not collector.plugins.cleanup_ready(record)
+    finally:
+        collector.close()
+
+
 async def test_progress_logs_before_plugin_exits_without_polluting_response(tmp_path, caplog):
     release = tmp_path / 'release'
     script = tmp_path / 'progress.py'

@@ -63,6 +63,10 @@ def run(settings: Settings) -> None:
     )
     api = NapCat(settings.group_id, http)
     collector = Collector(settings, api=api, http=http)
+    log.info(
+        "工作数据目录：%s；原包归档目录：%s",
+        settings.data_dir, collector.archive_root / "archive",
+    )
     milestones = Milestones(settings, collector.db, api=api)
     maintenance = PluginMaintenanceRunner(collector.db, settings.data_dir, settings.plugins)
     api.on_receipts_reset = collector.reset_priority

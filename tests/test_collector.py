@@ -134,10 +134,27 @@ def zip_bytes() -> bytes:
     return stream.getvalue()
 
 
-async def test_collects_zip_before_removing_group_source(tmp_path: Path) -> None:
+@pytest.mark.parametrize("separate_disk", [False, True])
+async def test_collects_zip_before_removing_group_source(
+    tmp_path: Path, separate_disk: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     body = zip_bytes()
     group = FakeGroup()
-    settings = Settings(group_id=123, data_dir=tmp_path, delete_grace_hours=0, min_free_gib=0)
+    archive_root = tmp_path / "cold" if separate_disk else tmp_path
+    archive_root.mkdir(exist_ok=True)
+    settings = Settings(
+        group_id=123, data_dir=tmp_path,
+        archive_data_dir=archive_root if separate_disk else None,
+        delete_grace_hours=0, min_free_gib=0,
+    )
+    replace = Path.replace
+
+    def same_volume_replace(source: Path, destination: Path) -> Path:
+        assert source.parent == archive_root / "incoming"
+        assert destination.is_relative_to(archive_root / "archive")
+        return replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", same_volume_replace)
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
     ) as http:
@@ -149,7 +166,7 @@ async def test_collects_zip_before_removing_group_source(tmp_path: Path) -> None
         await collector.process_once()
         record = collector.record(record_id)
         assert record["status"] == "archived"
-        assert (tmp_path / record["archive_path"]).read_bytes() == body
+        assert (archive_root / record["archive_path"]).read_bytes() == body
         assert group.files == {"file-a"}  # Collection completes before the cleanup worker runs.
         await collector.cleanup()
         record = collector.record(record_id)
@@ -331,6 +348,35 @@ async def test_does_not_delete_uncollected_files_or_when_disabled(
         elif case == "http_error":
             assert collector.record(record_id)["last_error"] == "HTTPStatusError HTTP 403"
         assert len(group.messages) == (1 if case == "disabled" else 0)
+        collector.close()
+
+
+def test_unavailable_archive_disk_does_not_start(tmp_path: Path) -> None:
+    settings = Settings(group_id=123, data_dir=tmp_path / "work",
+                        archive_data_dir=tmp_path / "disconnected")
+    with pytest.raises(OSError, match="归档磁盘目录不可用"):
+        Collector(settings)
+    assert not settings.data_dir.exists()
+
+
+@pytest.mark.parametrize("unavailable", ["work", "cold"])
+def test_either_disk_full_blocks_download_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unavailable: str,
+) -> None:
+    import shutil
+
+    archive_root = tmp_path / "cold"
+    archive_root.mkdir()
+    settings = Settings(group_id=123, data_dir=tmp_path / "work", archive_data_dir=archive_root)
+    collector = Collector(settings, api=FakeGroup())
+    usage_type = type(shutil.disk_usage(tmp_path))
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage_type(
+        100 * 2**30, 0, 0 if path.name == unavailable else 100 * 2**30,
+    ))
+    try:
+        with pytest.raises(OSError, match="工作盘或归档盘剩余空间不足"):
+            collector.can_work()
+    finally:
         collector.close()
 
 
