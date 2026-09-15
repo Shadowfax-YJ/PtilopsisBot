@@ -17,6 +17,7 @@ dependencies = [
   "pydantic>=2.7,<3",
   "APScheduler==3.11.3",
   "tzdata>=2025",
+  "rich>=14,<15",
 ]
 
 [project.urls]
@@ -24,7 +25,7 @@ Repository = "https://github.com/Shadowfax-YJ/PtilopsisBot"
 Issues = "https://github.com/Shadowfax-YJ/PtilopsisBot/issues"
 
 [project.optional-dependencies]
-blackflow = ["lubiao-pipeline[ocr] @ git+https://github.com/Landmark-Achiever/lubiao-analysis.git@187432e94f084bcde8d620881bac6f2bc8d17aaf"]
+blackflow = ["lubiao-pipeline[ocr] @ git+https://github.com/Landmark-Achiever/lubiao-analysis.git@81b1b0e268be4a5c1bc578160d4eada6552087fa"]
 dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "mypy>=1.18,<2", "ruff>=0.12,<1"]
 
 [project.scripts]

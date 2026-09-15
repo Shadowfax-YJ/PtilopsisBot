@@ -5,7 +5,6 @@ import secrets
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from functools import partial
-from logging.handlers import RotatingFileHandler
 from typing import Any
 
 import httpx
@@ -17,6 +16,7 @@ from nonebot.drivers.fastapi import Driver
 
 from .collector import SHANGHAI, Collector
 from .config import Settings
+from .logging_ui import configure_logging
 from .milestones import Milestones
 from .napcat import NapCat
 from .plugins import PluginMaintenanceRunner
@@ -24,21 +24,8 @@ from .plugins import PluginMaintenanceRunner
 log = logging.getLogger(__name__)
 
 
-def configure_logging(settings: Settings) -> None:
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(
-        settings.data_dir / "collector.log", maxBytes=5 * 1024**2, backupCount=3, encoding="utf-8"
-    )
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        handlers=[handler, logging.StreamHandler()],
-    )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
-def run(settings: Settings) -> None:
-    configure_logging(settings)
+def run(settings: Settings, *, console: bool = True) -> None:
+    configure_logging(settings, console=console)
     nonebot.init(
         driver="~fastapi",
         host="127.0.0.1",
@@ -77,6 +64,7 @@ def run(settings: Settings) -> None:
     scan_pending = False
     cleanup_pending = False
     next_cleanup_check = 0.0
+    last_scan_log = float("-inf")
     scheduler = AsyncIOScheduler(timezone=SHANGHAI)
     workers: list[asyncio.Task[None]] = []
 
@@ -86,9 +74,12 @@ def run(settings: Settings) -> None:
         cleanup_wake.set()
 
     async def scan() -> bool:
-        nonlocal scan_pending
+        nonlocal scan_pending, last_scan_log
         if not scan_pending or not await api.refresh_status():
             return False
+        # File notices and their matching chat events arrive in short bursts.
+        # Preserve one trailing scan if another event arrives during the RPC.
+        await asyncio.sleep(1)
         scan_pending = False
         try:
             uploads = await api.list_uploads()
@@ -98,7 +89,9 @@ def run(settings: Settings) -> None:
             raise
         download_wake.set()
         request_cleanup()
-        log.info("根目录补扫登记 %s 个符合条件的包，已请求检查清理条件", count)
+        if collector.clock() - last_scan_log >= 30:
+            log.info("根目录补扫登记 %s 个符合条件的包，已请求检查清理条件", count)
+            last_scan_log = collector.clock()
         return False
 
     async def download_one(*, live_only: bool) -> bool:
@@ -276,6 +269,25 @@ def run(settings: Settings) -> None:
             raise HTTPException(401, "本机管理命令需要 access_token")
 
     auth = [Depends(authorize)]
+
+    @app.get("/ptilopsisbot/overview", dependencies=auth)
+    async def overview() -> dict[str, Any]:
+        # Dashboard polling must not serialize the complete plugin outbox.
+        counts = {row[0]: row[1] for row in collector.db.execute(
+            "SELECT status,COUNT(*) FROM uploads GROUP BY status"
+        )}
+        return {
+            "online": api.online, "group_id": settings.group_id, "counts": counts,
+            "download_concurrency": settings.download_concurrency,
+            "cleanup_concurrency": settings.cleanup_concurrency,
+            "group_storage_limit_gib": settings.group_storage_limit_gib,
+            "group_storage_bytes": collector.group_storage_bytes,
+            "active_downloads": sorted(k for k, v in collector.active.items() if v == "download"),
+            "active_cleanup": sorted(k for k, v in collector.active.items() if v == "cleanup"),
+            "plugin_maintenance": [
+                {k: v for k, v in row.items() if k != "result"} for row in maintenance.records()
+            ],
+        }
 
     @app.get("/ptilopsisbot/status", dependencies=auth)
     async def status() -> dict[str, Any]:

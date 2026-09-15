@@ -57,6 +57,7 @@ class NapCat:
         self.observed_latest_times: dict[str, float] = {}
         self.connection_generation = 0
         self.on_receipts_reset: Callable[[], None] | None = None
+        self.last_missing_time_warning = float("-inf")
         self.reset_receipts()
 
     def reset_receipts(self) -> None:
@@ -177,10 +178,11 @@ class NapCat:
             file_id: max(u.modified_at for u in all_uploads if u.file_id == file_id)
             for file_id in counts
         }
-        if missing_times:
+        if missing_times and self.clock() - self.last_missing_time_warning >= 1800:
             log.warning(
                 "%s 个群文件没有有效上传时间，按文件消息时间或首次发现时间登记", missing_times
             )
+            self.last_missing_time_warning = self.clock()
         return uploads
 
     def _matching_message(self, upload: Upload, uploads: list[Upload]) -> FileMessage | None:

@@ -2,6 +2,21 @@
 
 已支持通用归档插件和后台处理，配置见 [插件协议](docs/plugins.md)，维护入口为 [extend-collector-plugins](.agents/skills/extend-collector-plugins/SKILL.md)。
 
+交互终端执行 `ptilopsisbot run` 默认显示 TUI：并发下载、处理、迁移和发布的最近进度分区展示，
+底部日志可按模块筛选，告警单独保留。`run --plain` 使用普通日志，重定向输出时也自动使用普通日志。
+`run --tui` 可明确选择面板。Ctrl+C 会按既有流程停止机器人并等待在途任务退出。
+
+机器人已在运行时，在另一个终端执行 `ptilopsisbot dashboard` 可以直接查看，**不会启动机器人或 NapCat**。
+它只读取本机状态接口和 `collector.log`，支持旧版机器人；旧版缺少的计数显示为 `—`。
+连接中断时保留上次状态及更新时间并自动重连。按 Q 或 Ctrl+C 只关闭这个独立面板。
+Windows 快捷键：0 全部、1 下载、2 处理、3 迁移、4 发布、5 清理、6 告警、P 暂停/恢复画面；
+暂停画面不暂停收集或日志落盘。小窗口切换分类可查看迁移/发布；`dashboard --once` 打印一次状态。
+
+日志统一为 `日期时间 级别 [分区] 模块 | 内容`，完整轮转日志仍在 `data_dir/collector.log`。
+文件名、进度、告警和异常堆栈保留；QQ 原始事件和 Matcher 生命周期不再刷屏，下载链接隐藏。
+上传时间缺失的提示每 30 分钟最多一条，短时间内的上传通知与文件消息合并触发扫描。
+只读面板可立即连接旧进程；统一日志、扫描合并和 `run` 内置面板在下次启动机器人时生效。
+
 一个采用《明日方舟》干员白面鸮说话风格的 QQ 群对局数据小助手。将 `run-YYYYMMDD-HHMMSS-NNNNNN.zip` 下载到本机，检查完整性，再清理对应群文件腾出空间。每个实例配置一个目标群，只主动收集根目录中的对局包。
 
 本仓库仅维护 QQ 群数据收集机器人。夸克网盘定时订阅工具在独立仓库 [quark-timed-sync](https://github.com/Shadowfax-YJ/quark-timed-sync) 维护。

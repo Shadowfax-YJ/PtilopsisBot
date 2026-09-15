@@ -147,6 +147,11 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                 else:
                     raise AssertionError("Bot did not start")
                 assert (await http.get("/ptilopsisbot/status")).status_code == 401
+                assert (await http.get("/ptilopsisbot/overview")).status_code == 401
+                overview = await http.get("/ptilopsisbot/overview", headers=headers)
+                assert overview.status_code == 200
+                assert "counts" in overview.json()
+                assert "records" not in overview.json()
                 async with connect(
                     f"ws://127.0.0.1:{port}/onebot/v11/",
                     additional_headers={**headers, "X-Self-ID": "999"},

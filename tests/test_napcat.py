@@ -14,6 +14,22 @@ from ptilopsisbot.config import Settings
 from ptilopsisbot.napcat import NapCat
 
 
+async def test_missing_upload_time_warning_is_rate_limited(caplog):
+    now = [10000.0]
+    rpc = FilesRPC()
+    rpc.files["source-a"]["upload_time"] = 0
+    async with httpx.AsyncClient() as http:
+        api = NapCat(123, http, clock=lambda: now[0])
+        api.bot = rpc
+        for _ in range(10):
+            uploads = await api.list_uploads()
+            assert uploads
+        assert caplog.text.count("没有有效上传时间") == 1
+        now[0] += 1800
+        await api.list_uploads()
+        assert caplog.text.count("没有有效上传时间") == 2
+
+
 async def test_zero_upload_time_archives_on_observation_day_and_counts_in_report(
     tmp_path: Path,
 ) -> None:
