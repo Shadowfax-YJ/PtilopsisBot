@@ -25,6 +25,7 @@ from .logging_ui import channel, clean
 from .progress_ui import Meters
 
 CHANNELS = ("全部", "下载", "处理", "迁移", "发布", "清理", "告警")
+REFRESH_INTERVAL = 1.0
 LOG_LINE = re.compile(
     r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d[,.]\d+)\s+"
     r"(\w+)\s+(?:\[([^]]+)\]\s+)?([\w.]+)\s+(?:\|\s+)?(.*)$"
@@ -118,12 +119,16 @@ class Model:
     def task_panel(self, category: str, height: int) -> Panel:
         meters = self.meters.select(category, max(1, (height - 2) // 2))
         if meters:
-            running = any(row.get("status") == "running"
-                          for row in self.status.get("plugin_maintenance", []))
-            return Panel(Group(*(meter.display(running=running or category in {"下载", "清理"})
-                                 for meter in meters)),
-                         title="下载 / 删前校验" if category == "下载" else category,
-                         border_style="cyan")
+            transfer = category in {"下载", "清理"}
+            active = bool(self.status.get("active_cleanup") or (
+                category == "下载" and self.status.get("active_downloads"))) if transfer else any(
+                    row.get("status") == "running"
+                    for row in self.status.get("plugin_maintenance", []))
+            title = "下载 / 删前校验" if category == "下载" else category
+            if transfer and not active:
+                title += " · 空闲 / 最近记录"
+            return Panel(Group(*(meter.display(running=active) for meter in meters)),
+                         title=title, border_style="cyan")
         table = Table.grid(expand=True, padding=(0, 1))
         table.add_column(width=8, min_width=8, max_width=8, style="dim", no_wrap=True)
         table.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
@@ -142,10 +147,8 @@ class Model:
         header = Text("PTILOPSIS  /  运行面板", style="bold cyan")
         header.append(f"    {self.connection}    状态更新 {self.updated}", style="white")
         header.append(f"\n群文件 {storage} / {status.get('group_storage_limit_gib', '—')} GiB"
-                      f"    下载 {len(status.get('active_downloads', []))}"
-                      f"/{status.get('download_concurrency', '—')}"
-                      f"    清理 {len(status.get('active_cleanup', []))}"
-                      f"/{status.get('cleanup_concurrency', '—')}"
+                      f"    {self.activity('下载', 'active_downloads', 'download_concurrency')}"
+                      f"    {self.activity('清理', 'active_cleanup', 'cleanup_concurrency')}"
                       f"    已归档 {counts.get('archived', 0) if 'counts' in status else '—'}"
                       f"    排队 {counts.get('queued', 0) if 'counts' in status else '—'}",
                       style="white")
@@ -205,9 +208,16 @@ class Model:
         exit_hint = "Q 退出面板（机器人继续）" if attached else "Ctrl+C 停止机器人"
         footer = Text("0 全部  1 下载  2 处理  3 迁移  4 发布  5 清理  6 告警\n", style="dim")
         footer.append(f"P {'恢复刷新' if self.paused else '暂停画面'}  ·  {exit_hint}"
-                      f"  ·  历史告警 {len(self.alerts)}", style="yellow" if self.paused else "dim")
+                      f"  ·  1 FPS  ·  历史告警 {len(self.alerts)}",
+                      style="yellow" if self.paused else "dim")
         layout["footer"].update(footer)
         return layout
+
+    def activity(self, label: str, key: str, limit_key: str) -> str:
+        count = len(self.status[key]) if key in self.status else None
+        detail = " · 空闲" if count == 0 else " · 执行/上限" if count else ""
+        return (f"{label} {count if count is not None else '—'}/"
+                f"{self.status.get(limit_key, '—')}{detail}")
 
 
 def poll(client: httpx.Client, settings: Settings, model: Model, path: str) -> str:
@@ -250,6 +260,7 @@ class StatusPoller:
         self.future: Future[tuple[str, Model]] | None = None
         self.path = "overview"
         self.next_poll = 0.0
+        self.closed = False
 
     def read(self) -> tuple[str, Model]:
         snapshot = Model()
@@ -262,11 +273,12 @@ class StatusPoller:
             if snapshot.updated != "—":
                 model.status, model.updated = snapshot.status, snapshot.updated
             self.future = None
-            self.next_poll = time.monotonic() + 3
-        if self.future is None and time.monotonic() >= self.next_poll:
+        if not self.closed and self.future is None and time.monotonic() >= self.next_poll:
+            self.next_poll = time.monotonic() + REFRESH_INTERVAL
             self.future = self.pool.submit(self.read)
 
     def close(self) -> None:
+        self.closed = True
         self.pool.shutdown(wait=True, cancel_futures=True)
 
 
@@ -291,18 +303,23 @@ def watch(settings: Settings, *, stop: threading.Event | None = None,
         with Live(console=console, screen=True, auto_refresh=False,
                   redirect_stdout=False, redirect_stderr=False) as live:
             try:
+                next_frame = 0.0
                 while not stop.is_set():
-                    for line in tail.read():
-                        model.feed(line)
                     reader.tick(model)
                     key = read_key()
                     if attached and key.lower() == "q":
                         break
                     model.key(key)
-                    if not model.paused:
-                        live.update(model.render(console.width, console.height, attached=attached),
-                                    refresh=True)
-                    stop.wait(0.25)
+                    now = time.monotonic()
+                    if now >= next_frame:
+                        next_frame = now + REFRESH_INTERVAL
+                        for line in tail.read():
+                            model.feed(line)
+                        if not model.paused:
+                            live.update(model.render(console.width, console.height,
+                                                     attached=attached), refresh=True)
+                    # Keyboard/stop checks stay responsive independently of FPS.
+                    stop.wait(0.05)
             except KeyboardInterrupt:
                 if not attached:
                     raise

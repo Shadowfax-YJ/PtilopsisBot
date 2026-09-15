@@ -8,10 +8,107 @@ import httpx
 import pytest
 from rich.console import Console
 
+from ptilopsisbot import dashboard
 from ptilopsisbot.config import Settings
 from ptilopsisbot.dashboard import LogTail, Model, StatusPoller, poll
 from ptilopsisbot.logging_ui import UnifiedFormatter, framework_sink
 from ptilopsisbot.progress_ui import Meter, Meters
+
+
+def test_completed_release_and_idle_cycle_settle_stale_stage_bars():
+    meters = Meters()
+    meters.feed("并行识别：本批 1000 条图像任务、739 条日志任务")
+    meters.feed("计算设备确认：cuda；本批完成 1739 条")
+    meters.feed("核对识别缓存：127775/293036 条，内容重验 50 条")
+    meters.feed("发布进度：核对识别关系，已完成 265889/291050 条")
+    meters.feed("网盘分卷：本卷已写入 173.0 MiB，已完成 0/1 个对象")
+    meters.feed("网盘分卷：已保存第 21 个新增分卷，包含 1 个对象")
+    assert meters.rows["发布", "volume"].completed == 1
+    assert meters.rows["发布", "volume"].finished
+    meters.feed("发布完成：20260916-004735")
+    assert [key for category, key in meters.rows if category == "发布"] == ["release"]
+    meters.feed("处理汇总：本批识别/整理 0 条，复用 293036 条，失败 0 条，待续 0 条；"
+                "数据继续处理，等待次日 00:05 发布；当前数据版本 20260916-004735；"
+                "网盘分卷已就绪（191 卷，713455 个对象）")
+    assert ("处理", "batch") not in meters.rows
+    cache = meters.rows["处理", "cache"]
+    assert cache.finished and cache.completed == cache.total == 293036
+    assert all(m.finished and not m.active for m in meters.select("发布", 3))
+    meters.feed("迁移盘点：本次跟踪 389826 个散文件，剩余 6778 个")
+    assert not cache.active
+    meters.feed("中心存储整理：本批迁移 6778 个对象；散文件迁移完成")
+    assert meters.rows["迁移", "total"].finished
+    assert meters.rows["迁移", "total"].completed == 389826
+    meters.feed("发布数据：正在冻结 1860 局并导出到同步目录")
+    meters.feed("发布进度：校验发布对象，已完成 0/800000 个")
+    assert ("发布", "release") not in meters.rows
+    assert not meters.rows["发布", "manifest"].finished
+
+
+def test_stage_switch_waits_without_inventing_completion_and_keeps_overall_visible():
+    meters = Meters()
+    meters.feed("识别队列：已完成 100 条，待处理 20 条")
+    meters.feed("核对识别缓存：50/100 条")
+    meters.feed("发布进度：整理地图表，已完成 0/50 局")
+    cache = meters.rows["处理", "cache"]
+    assert not cache.active and not cache.finished and cache.completed == 50
+    meters.feed("处理汇总：本批识别/整理 0 条，复用 100 条，失败 0 条，待续 20 条；"
+                "发布校验/导出已保存进度，下批续接")
+    assert not meters.rows["发布", "manifest"].finished
+    assert not meters.rows["发布", "manifest"].active
+    assert meters.rows["处理", "queue"].completed == 100
+    assert meters.rows["处理", "queue"].total == 120
+
+
+def test_transfer_selection_preserves_recency_and_active_counts_are_explicit():
+    model = Model()
+    model.meters.feed("删源前远端校验 old.zip 完成，平均 1.0 MiB/s")
+    model.meters.feed("上传记录 12 下载归档 开始，共 100.0 MiB")
+    model.meters.feed("上传记录 12 下载归档 完成，平均 2.0 MiB/s")
+    assert model.meters.select("下载", 1)[0].label == "下载 #12"
+    model.accept({"online": True, "active_downloads": [1, 2], "active_cleanup": [3],
+                  "download_concurrency": 3, "cleanup_concurrency": 3})
+    assert model.activity("下载", "active_downloads", "download_concurrency").startswith("下载 2/3")
+    assert model.activity("清理", "active_cleanup", "cleanup_concurrency").startswith("清理 1/3")
+    model.status["active_cleanup"] = []
+    assert "空闲" in model.activity("清理", "active_cleanup", "cleanup_concurrency")
+
+
+def test_render_cadence_is_one_fps_without_slowing_stop_checks(tmp_path, monkeypatch):
+    now, frames, waits = [0.0], [], []
+
+    class Stop:
+        def is_set(self):
+            return now[0] >= 3.1
+
+        def wait(self, delay):
+            waits.append(delay)
+            now[0] += delay
+
+    class Live:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def update(self, renderable, **kwargs):
+            frames.append(now[0])
+
+    monkeypatch.setattr(dashboard.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(dashboard, "Console", lambda **kw:
+                        SimpleNamespace(is_terminal=True, width=140, height=38))
+    monkeypatch.setattr(dashboard, "Live", Live)
+    monkeypatch.setattr(dashboard, "StatusPoller", lambda *args:
+                        SimpleNamespace(tick=lambda model: None, close=lambda: None))
+    monkeypatch.setattr(dashboard, "read_key", lambda: "")
+    dashboard.watch(Settings(group_id=123, data_dir=tmp_path), stop=Stop())
+    assert len(frames) == 4
+    assert all(b - a >= 1 for a, b in zip(frames, frames[1:]))
+    assert max(waits) <= 0.1
 
 
 def test_progress_bar_is_visible_and_unfinished_work_never_rounds_to_complete():

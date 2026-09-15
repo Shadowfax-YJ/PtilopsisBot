@@ -196,12 +196,18 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                                     "folders": [],
                                 }
                             elif action == "get_group_file_url":
+                                activity = (await http.get(
+                                    "/ptilopsisbot/overview", headers=headers)).json()
+                                assert activity["active_downloads"] or activity["active_cleanup"]
                                 assert request["params"]["file_id"] in handles
                                 source = handles[request["params"]["file_id"]]
                                 data = {
                                     "url": f"http://127.0.0.1:{server.server_port}/{source}.zip"
                                 }
                             elif action == "delete_group_file":
+                                activity = (await http.get(
+                                    "/ptilopsisbot/overview", headers=headers)).json()
+                                assert activity["active_cleanup"]
                                 assert request["params"]["busid"] == busid
                                 group_files.remove(handles[request["params"]["file_id"]])
                                 data = {"result": 0, "errMsg": ""}
@@ -249,6 +255,9 @@ async def test_real_onebot_websocket_collects_100mib_then_deletes_and_reports(
                             else:
                                 raise AssertionError(log_path.read_text(encoding="utf-8"))
                             assert state["download_concurrency"] == 3
+                            activity = (await http.get(
+                                "/ptilopsisbot/overview", headers=headers)).json()
+                            assert len(activity["active_downloads"]) == 2
                             assert state["cleanup_concurrency"] == 3
                             assert len(state["records"]) == 3
                         if live:
