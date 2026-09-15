@@ -4,6 +4,7 @@ import logging
 import zlib
 from collections.abc import Callable
 from contextlib import nullcontext, suppress
+from functools import partial
 from pathlib import Path
 from time import perf_counter
 from typing import TypeVar
@@ -79,7 +80,9 @@ async def download(
                 if total > max_size or total > expected_size:
                     raise CollectionError("下载超过文件大小上限")
                 if output is not None:
-                    output.write(chunk)
+                    # A slow archive disk must not stall QQ events or status
+                    # requests. Drain an in-flight write before cancellation.
+                    await file_check(partial(output.write, chunk))
                 digest.update(chunk)
                 now = perf_counter()
                 if now - last_progress >= 10:
@@ -92,6 +95,8 @@ async def download(
                         total / 1024**2 / max(now - started, 0.001),
                     )
                     last_progress = now
+            if output is not None:
+                await file_check(output.flush)
     if total != expected_size:
         raise CollectionError("下载不完整，实收大小与群文件声明不符")
     elapsed = max(perf_counter() - started, 0.001)

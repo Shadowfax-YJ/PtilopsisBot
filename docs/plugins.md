@@ -11,6 +11,11 @@
 
 可选 `maintenance` 声明包含绝对 `command` 数组、`timeout_seconds`、`interval_seconds`。机器人运行时用独立后台任务发送 `maintenance.tick`，请求格式同下方协议，input 为空。即使没有新上传也持续处理，状态写入 SQLite，重启恢复未完批次，停止机器人时停止子进程。此任务与归档投递/下载独立，插件不要求另配系统定时任务。`status` 的 plugin_maintenance 展示结果、重试时间。
 
+协议 1 的维护响应可选 `continue_immediately=true`。仅在 `status=ok` 且 `pending=true` 时，
+宿主取消这次结束后的空闲间隔，立即调度下一轮；每轮仍有独立截止时间与持久化回执。
+插件应仅在实际推进了积压、或有按时间切分且可继续推进的发布任务时请求续接。
+空闲、等待未来发布时刻、失败及旧插件未声明时，仍按 `interval_seconds` 检查，避免空转和错误刷屏。
+
 归档插件配置无 maintenance 时保持原配置摘要，已有交接回执继续有效。领域插件负责决定后台批次执行哪些工作，通用宿主不理解 OCR、快照或游戏字段。
 
 请求包含 protocol_version=1、plugin_id/version、event_id、invocation_id、Unix 秒 deadline、hook=archive.committed、state_dir、input（archive_id/root/path/original_name/archive_relative_path/retained_locally/size/sha256）。`original_name` 来自收件记录，`path` 是宿主归档位置，`archive_relative_path` 是相对于宿主 archive 根的原路径，例如 `2026-09-09/123456789/735.zip`。插件保留来源目录和编号文件名，并把上传原名另作元数据。旧协议请求允许缺少新增字段。启动时补全历史请求；input 有变化时重新投递一次，包括新增元数据、保留承诺或迁移后的本地路径。输入不变的再次重启不会重复投递。宿主不把令牌或带签名下载 URL 传给插件。

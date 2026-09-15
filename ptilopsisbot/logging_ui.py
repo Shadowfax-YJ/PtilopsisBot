@@ -17,11 +17,13 @@ def clean(value: str) -> str:
 
 
 def channel(name: str, message: str) -> str:
-    if "处理汇总：" in message:
+    if "处理汇总：" in message or "识别运行失败" in message:
         return "处理"
-    if any(word in message for word in ("对象存储", "存储整理", "散文件", "数据库分片")):
+    if any(word in message for word in (
+        "对象存储", "存储整理", "散文件", "数据库分片", "迁移盘点"
+    )):
         return "迁移"
-    if any(word in message for word in ("分卷", "发布", "节点统计", "云端修订")):
+    if any(word in message for word in ("分卷", "发布", "节点统计", "云端修订", "地图表")):
         return "发布"
     if any(word in message for word in (
         "清理", "删源", "删前", "删除", "根目录", "群文件", "本地归档校验"

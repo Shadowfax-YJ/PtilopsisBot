@@ -1,5 +1,7 @@
 import io
 import logging
+import threading
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -7,8 +9,83 @@ import pytest
 from rich.console import Console
 
 from ptilopsisbot.config import Settings
-from ptilopsisbot.dashboard import LogTail, Model, poll
+from ptilopsisbot.dashboard import LogTail, Model, StatusPoller, poll
 from ptilopsisbot.logging_ui import UnifiedFormatter, framework_sink
+from ptilopsisbot.progress_ui import Meter, Meters
+
+
+def test_progress_bar_is_visible_and_unfinished_work_never_rounds_to_complete():
+    output = io.StringIO()
+    console = Console(file=output, width=90, legacy_windows=False, color_system=None)
+    console.print(Meter("识别总队列", 99999, 100000, "条").display())
+    rendered = output.getvalue()
+    assert "99.9%" in rendered
+    assert "100.0%" not in rendered
+    assert "━" in rendered
+
+
+def test_map_and_volume_progress_use_their_own_totals():
+    meters = Meters()
+    meters.feed("发布进度：整理地图表，已完成 0/1850 局")
+    meters.feed("地图表进度：已保存 94/1850 局分片；下批续接")
+    assert meters.rows["发布", "manifest"].completed == 94
+    assert meters.rows["发布", "manifest"].total == 1850
+    meters.feed("网盘分卷：本卷已写入 12.0 MiB 原始内容，已完成 150/800 个对象；到期先封存")
+    assert meters.rows["发布", "volume"].completed == 150
+    assert meters.rows["发布", "volume"].total == 800
+
+
+def test_progress_counters_keep_batches_separate_and_never_invent_totals():
+    meters = Meters()
+    meters.feed("上传记录 10 下载归档 80%，40.0/50.0 MiB，平均 2.00 MiB/s")
+    meters.feed("上传记录 11 下载归档 开始，共 100.0 MiB")
+    meters.feed("识别队列：已完成 1000 条，待处理 3000 条")
+    meters.feed("识别/整理进行中：候选 2048 条，本批已保存 500 条结果")
+    assert meters.rows["下载", "10"].completed == 40
+    assert meters.rows["下载", "11"].completed == 0
+    assert meters.rows["处理", "queue"].completed == 1500
+    assert meters.rows["处理", "queue"].total == 4000
+    meters.feed("处理汇总：本批识别/整理 2048 条，复用 1000 条，失败 1 条，待续 952 条")
+    assert meters.rows["处理", "queue"].completed == 3047
+    assert meters.rows["处理", "queue"].total == 4000
+    meters.feed("对象存储迁移：4 个 I/O 线程，本批已迁移 1234 个对象")
+    assert meters.rows["迁移", "batch"].total is None
+    meters.feed("迁移盘点：本次跟踪 10000 个散文件，剩余 8000 个")
+    meters.feed("对象存储迁移：4 个 I/O 线程，本批已迁移 500 个对象")
+    assert meters.rows["迁移", "total"].completed == 2500
+    meters.feed("中心存储整理：本批迁移 500 个对象；下批继续")
+    assert meters.rows["迁移", "total"].completed == 2500  # No double counting.
+    meters.feed("迁移盘点：本次跟踪 10000 个散文件，剩余 7500 个")
+    meters.feed("对象存储迁移：4 个 I/O 线程，本批已迁移 300 个对象")
+    assert meters.rows["迁移", "total"].completed == 2800
+
+
+def test_slow_status_request_does_not_block_refresh_or_keyboard():
+    entered, release = threading.Event(), threading.Event()
+
+    def handler(request):
+        entered.set()
+        assert release.wait(3)
+        return httpx.Response(200, json={"online": True})
+
+    model = Model()
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        reader = StatusPoller(client, Settings(group_id=123))
+        try:
+            reader.tick(model)
+            assert entered.wait(1)
+            start = time.monotonic()
+            for _ in range(20):
+                reader.tick(model)
+                model.key("3")
+            assert time.monotonic() - start < 0.5
+            assert model.selected == "迁移"
+            assert model.status == {}
+        finally:
+            release.set()
+            reader.close()
+        reader.tick(model)
+        assert model.connection == "QQ 在线"
 
 
 def test_tail_partial_utf8_and_rotation(tmp_path):

@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .config import PluginCommand, PluginConfig
+from .config import PluginCommand, PluginConfig, PluginMaintenance
 
 log = logging.getLogger(__name__)
 PROGRESS_PREFIX = b"PLUGIN_PROGRESS "
@@ -220,7 +220,8 @@ class PluginMaintenanceRunner:
         self.last_results: dict[str, tuple[str, str]] = {}
         for config in configs:
             if config.maintenance:
-                log.info("[%s] 后台处理已启用；配置版本 %s；每 %s 秒检查，单批超时 %s 秒",
+                log.info("[%s] 后台处理已启用；配置版本 %s；空闲间隔 %s 秒，"
+                         "单批超时 %s 秒；支持积压续接",
                          config.id, config.version, config.maintenance.interval_seconds,
                          config.maintenance.timeout_seconds)
             else:
@@ -309,7 +310,7 @@ class PluginMaintenanceRunner:
                         result["status"],
                         json.dumps(result),
                         time.time(),
-                        time.time() + command.interval_seconds,
+                        time.time() + maintenance_delay(command, result),
                         row["config_hash"],
                     ),
                 )
@@ -321,6 +322,14 @@ class PluginMaintenanceRunner:
                 log.info("[%s] 后台处理结果：%s；%s", config.id, *summary)
             self.last_results[row['config_hash']] = summary
             return True
+
+
+def maintenance_delay(command: PluginMaintenance, result: dict[str, Any]) -> int:
+    """Only successful, explicitly productive continuations bypass idle polling."""
+    if (result.get("status") == "ok" and result.get("pending") is True
+            and result.get("continue_immediately") is True):
+        return 0
+    return command.interval_seconds
 
 
 async def invoke(config: PluginCommand, request: dict[str, Any]) -> dict[str, Any]:

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 from test_plugins import plugin, settings, stage
@@ -9,6 +10,30 @@ from test_plugins import plugin, settings, stage
 from ptilopsisbot.collector import Collector
 from ptilopsisbot.config import PluginConfig, PluginMaintenance
 from ptilopsisbot.plugins import PluginMaintenanceRunner, fingerprint
+
+
+async def test_productive_continuation_skips_idle_wait_but_errors_do_not(tmp_path, monkeypatch):
+    cfg = plugin(tmp_path)
+    cfg = cfg.model_copy(update={"maintenance": PluginMaintenance(command=cfg.command)})
+    collector = Collector(settings(tmp_path, cfg))
+    results = iter([
+        {"status": "ok", "pending": True, "continue_immediately": True},
+        {"status": "retry", "pending": True, "continue_immediately": True},
+    ])
+
+    async def invoke(*args):
+        return next(results)
+
+    monkeypatch.setattr("ptilopsisbot.plugins.invoke", invoke)
+    try:
+        runner = PluginMaintenanceRunner(collector.db, collector.settings.data_dir, [cfg])
+        assert await runner.process_once()
+        assert runner.records()[0]["next_attempt"] <= time.time()
+        assert await runner.process_once()
+        assert runner.records()[0]["next_attempt"] > time.time() + 25
+        assert not await runner.process_once()
+    finally:
+        collector.close()
 
 
 def test_legacy_receipt_fingerprint_stays_identical(tmp_path: Path) -> None:
