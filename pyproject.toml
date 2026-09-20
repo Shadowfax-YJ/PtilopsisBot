@@ -25,7 +25,7 @@ Repository = "https://github.com/Shadowfax-YJ/PtilopsisBot"
 Issues = "https://github.com/Shadowfax-YJ/PtilopsisBot/issues"
 
 [project.optional-dependencies]
-blackflow = ["lubiao-pipeline[ocr] @ git+https://github.com/Landmark-Achiever/lubiao-analysis.git@5cd82cefc94dd4bb3f3ef187a8d630d3a14bbf13"]
+blackflow = ["lubiao-pipeline[ocr] @ git+https://github.com/Landmark-Achiever/lubiao-analysis.git@ab3e6d849a1711545e29ccdd15d36007546b3c52"]
 dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "mypy>=1.18,<2", "ruff>=0.12,<1"]
 
 [project.scripts]
