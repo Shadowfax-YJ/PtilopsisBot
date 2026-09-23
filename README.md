@@ -31,6 +31,8 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 
 0.4.3 的中心修订接收器沿用现有两个夸克自动备份目录，在原 maintenance 中只读下载已批准修订到备份根之外。原 archive 和收件回执保持原始字节，避免备份上传、重启补投与修订下载循环；无需在中心开启夸克文件下载同步。首次按[中心修订接收配置](https://github.com/Landmark-Achiever/lubiao-analysis/blob/main/docs/data-pipeline/central-revisions.md)填写实际路径、固定可信发布端公钥并扫码授权；后续用户批准的新批次由发布端签名，中心自动跟进，不再逐批改配置。安装代码不会自动启用；签名不替代逐项人工审核。
 
+采集版 v1.1.13 的实际难度校验需要同步更新接收端依赖：在原机器人目录执行 `git pull`，再使用原虚拟环境执行 `python -m pip install -e '.[blackflow]'`，按原方式重启机器人。此更新保留原配置与历史数据，新增记录会区分目标难度和实际难度；缺失或失败的实际难度确认不按 N6 接收。
+
 首次配置时，将 `config.toml` 中的 `group_id = 0` 替换为自己的目标 QQ 群号，再把生成的随机值填进 `access_token`。示例中的 0 是占位值，未填写真实群号时不能启动。已有配置保留原值即可。配置和数据目录不会提交到 Git：换电脑需单独带上 `config.toml`；已经收集过数据时先停止旧进程，再完整复制 `data` 目录。新电脑重新建立 `.venv`，不要复制旧虚拟环境；数据目录换位置时同步修改配置里的 `data_dir`。
 
 1. 从 [NapCat 官方发布页](https://github.com/NapNeko/NapCatQQ/releases)选择适合 Windows x64 的安装包，按照[官方配置说明](https://napneko.github.io/config/basic)完成安装和 QQ 登录。NapCat 放在独立目录，例如 `D:\Bots\NapCat`；版本兼容限制见下文。
