@@ -36,11 +36,17 @@ required_for_cleanup=true 时必须收到当前归档摘要、当前插件配置
 
 可选 `archive_data_dir` 将 `archive/` 和 `incoming/` 放在另一块盘，数据库、日志和 `state_dir` 仍在 `data_dir`。请求的 `input.root` 指向归档数据根，`path` 仍是 `archive/...`，协议版本和事件 ID 不变；插件不能假定 `input.root` 与 `state_dir` 共用父目录。下载临时文件与归档同盘，保留原子重命名和中断恢复。路径变化会使旧交接重新排队，直到插件核对新位置后才允许清理源文件。迁移工具也可在停机期间校验所有原件、更新插件持久引用和对应交接请求后保留已验证的回执。未配置时沿用原目录；显式配置的归档数据根必须预先存在，磁盘不可用时停止启动或暂停下载与清理。
 
-BlackFlow 业务插件 0.4.10 可将其中心工作库的大型对象分片单独放在其他磁盘，
+BlackFlow 业务插件自 0.4.10 起可将其中心工作库的大型对象分片单独放在其他磁盘，
 catalog、缓存、任务 journal 与宿主状态继续使用原 data_dir。
 业务插件的 `object-storage.json` schema 2 绑定目标路径及存储 ID；目标盘或分片不可用时拒绝对象读写。
 此配置由 analysis 维护，宿主协议和原件保留承诺不变；停机、WAL checkpoint、逐片哈希核验及回退方式
 见 [analysis 分盘工作库说明](https://github.com/Landmark-Achiever/lubiao-analysis/blob/3aa85cd0d853db943682fe0d5eeb9210d8947db2/docs/data-pipeline/packed-transport.md#0410-分盘工作库)。
+
+0.4.11 的维护改为逐局读取事实，并在 catalog 持久保存完成记录和输入依赖；
+输入核对每轮 180 秒，每局最多执行 32 条新识别，预算到期正常返回 pending 后续接。
+`object-locations.sqlite3` 位于中心目录，提供可重建的 SSD 位置提示；实际分片内容仍独立核验。
+旧 0.4.10 宿主请求兼容，不需要重启采集进程来使用修复后的后台子进程。
+详见 [analysis 有界维护说明](https://github.com/Landmark-Achiever/lubiao-analysis/blob/16d2ca1eecf0b2c1931b8d6fb1399aec3f933a6c/docs/data-pipeline/packed-transport.md#0411-有界维护)。
 
 `ptilopsisbot/files.py` 验证流式下载长度、计算 SHA-256、读取 ZIP 并限制成员/解压量。`collector.py` 登记上传、保存归档、统计贡献，按配置清理群文件；清理前重新验证本地和远端内容。`runtime.py` 管理扫描、下载、清理与回执，`config.py` 提供任务配置。
 
