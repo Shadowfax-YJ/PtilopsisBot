@@ -48,6 +48,11 @@ catalog、缓存、任务 journal 与宿主状态继续使用原 data_dir。
 旧 0.4.10 宿主请求兼容，不需要重启采集进程来使用修复后的后台子进程。
 详见 [analysis 有界维护说明](https://github.com/Landmark-Achiever/lubiao-analysis/blob/16d2ca1eecf0b2c1931b8d6fb1399aec3f933a6c/docs/data-pipeline/packed-transport.md#0411-有界维护)。
 
+0.4.15 将发布校验及分卷生成改为按分片批量预读小对象，继续校验真实内容摘要、大小和关系，
+大对象仍流式读取。收包、OCR 和节点准备保留各自时段，发布使用整轮 600 秒预算的剩余时间。
+已冻结发布及已完成分卷原地续接，旧宿主请求兼容；下一轮维护子进程使用新包，无需重启机器人。
+变更边界和部署验证见 [analysis 联动记录](https://github.com/Landmark-Achiever/lubiao-analysis/blob/32ddabe4d1d0518afac1e28d0c9dbc9fdfbe01c3/docs/data-pipeline/coordination.md)。
+
 `ptilopsisbot/files.py` 验证流式下载长度、计算 SHA-256、读取 ZIP 并限制成员/解压量。`collector.py` 登记上传、保存归档、统计贡献，按配置清理群文件；清理前重新验证本地和远端内容。`runtime.py` 管理扫描、下载、清理与回执，`config.py` 提供任务配置。
 
 `collector.py` 使用可配置 FilePolicy 匹配名称、解析业务时间和选择基础校验；存储后缀来自已核验的原始文件名。业务时间与群上传时间保持独立，旧配置继续匹配当前包格式。
