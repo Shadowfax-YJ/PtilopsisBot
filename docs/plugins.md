@@ -53,6 +53,14 @@ catalog、缓存、任务 journal 与宿主状态继续使用原 data_dir。
 已冻结发布及已完成分卷原地续接，旧宿主请求兼容；下一轮维护子进程使用新包，无需重启机器人。
 变更边界和部署验证见 [analysis 联动记录](https://github.com/Landmark-Achiever/lubiao-analysis/blob/32ddabe4d1d0518afac1e28d0c9dbc9fdfbe01c3/docs/data-pipeline/coordination.md)。
 
+0.4.16 自动发布先按整卷 SHA-256 核对本机已完成发布的历史分卷，再通过对象索引只读取
+新增或变化的中心对象。历史关系复用还要求匹配本机已有的对象、规则和预期输入证明；
+分卷缺失、损坏、变化或本机证明缺失不会由旧成功记录放行。按完整分卷保存进度，
+下一轮维护子进程直接续接已冻结版本，无需重启机器人、NapCat 或 TUI。
+发布使用的是经过验证的封存副本，不代表中心可变数据库已经完成全盘审计；
+消费者独立核验、原件保留、处理方法、数据格式和宿主协议保持原样。
+详见 [analysis 0.4.16 联动记录](https://github.com/Landmark-Achiever/lubiao-analysis/blob/a88362357c311b5048838b1003b56d065f665216/docs/data-pipeline/coordination.md)。
+
 `ptilopsisbot/files.py` 验证流式下载长度、计算 SHA-256、读取 ZIP 并限制成员/解压量。`collector.py` 登记上传、保存归档、统计贡献，按配置清理群文件；清理前重新验证本地和远端内容。`runtime.py` 管理扫描、下载、清理与回执，`config.py` 提供任务配置。
 
 `collector.py` 使用可配置 FilePolicy 匹配名称、解析业务时间和选择基础校验；存储后缀来自已核验的原始文件名。业务时间与群上传时间保持独立，旧配置继续匹配当前包格式。
